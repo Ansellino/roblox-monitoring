@@ -147,12 +147,50 @@ end
 
 -- Membuat GUI Interface
 function NetworkSpy:CreateGUI()
+    -- Destroy existing GUI if it exists
+    if self.GUI then
+        self.GUI:Destroy()
+    end
+    
     -- Main ScreenGui
     local screenGui = Instance.new("ScreenGui")
     screenGui.Name = "NetworkSpyGUI"
     screenGui.ResetOnSpawn = false
     screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    screenGui.Parent = CoreGui
+    
+    -- Try CoreGui first, then PlayerGui as fallback
+    local success = pcall(function()
+        screenGui.Parent = CoreGui
+    end)
+    
+    if not success or not screenGui.Parent then
+        pcall(function()
+            screenGui.Parent = PlayerGui
+        end)
+    end
+    
+    -- If still no parent, create in workspace as last resort
+    if not screenGui.Parent then
+        local playerGui = Players.LocalPlayer:FindFirstChild("PlayerGui")
+        if playerGui then
+            screenGui.Parent = playerGui
+            print("📍 GUI dibuat di PlayerGui")
+        else
+            warn("Could not find suitable parent for GUI")
+            return
+        end
+    else
+        print("📍 GUI dibuat di " .. screenGui.Parent.Name)
+    end
+    
+    -- Send notification
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = "Network Spy Remote",
+            Text = "GUI berhasil dimuat! Tekan F10 untuk toggle.",
+            Duration = 5
+        })
+    end)
     
     -- Main Frame
     local mainFrame = Instance.new("Frame")
@@ -527,6 +565,14 @@ function NetworkSpy:CreateGUI()
     self.LogFrame = logFrame
     self.DetailFrame = detailFrame
     
+    -- Debug: Check if GUI is visible
+    print("🔧 GUI Created, Parent:", screenGui.Parent and screenGui.Parent.Name or "None")
+    print("🔧 MainFrame visible:", mainFrame.Visible)
+    
+    -- Force visibility
+    mainFrame.Visible = true
+    screenGui.Enabled = true
+    
     -- Event Handlers
     closeBtn.MouseButton1Click:Connect(function()
         self:ToggleGUI()
@@ -587,10 +633,16 @@ function NetworkSpy:ToggleGUI()
     if self.GUI then
         self.GUI:Destroy()
         self.GUI = nil
+        print("🔍 Network Spy GUI ditutup")
     else
-        self:CreateGUI()
-        self:UpdateLogDisplay()
-        self:UpdateStatus()
+        local gui = self:CreateGUI()
+        if gui and gui.Parent then
+            print("🔍 Network Spy GUI berhasil dimuat di " .. gui.Parent.Name)
+            self:UpdateLogDisplay()
+            self:UpdateStatus()
+        else
+            warn("❌ Gagal membuat Network Spy GUI")
+        end
     end
 end
 
@@ -1419,10 +1471,55 @@ UserInputService.InputBegan:Connect(function(input, processed)
     end
 end)
 
--- Auto-start monitoring in studio
-if RunService:IsStudio() then
-    networkSpy:CreateGUI()
-    networkSpy:StartMonitoring()
+-- Auto-start GUI dan monitoring
+spawn(function()
+    wait(1) -- Wait a bit for game to load
+    print("🔧 Memulai inisialisasi Network Spy...")
+    
+    local success, error_msg = pcall(function()
+        print("🔧 Membuat GUI...")
+        networkSpy:CreateGUI()
+        
+        print("🔧 Memulai monitoring...")
+        networkSpy:StartMonitoring()
+        
+        print("🔧 Checking GUI status...")
+        if networkSpy.GUI and networkSpy.GUI.Parent then
+            print("✅ GUI berhasil dibuat dan ter-parent ke " .. networkSpy.GUI.Parent.Name)
+            print("✅ MainFrame visible:", networkSpy.GUI.MainFrame.Visible)
+        else
+            error("GUI tidak berhasil dibuat atau tidak ter-parent")
+        end
+    end)
+    
+    if success then
+        print("🔍 Network Spy Remote berhasil dimuat!")
+        print("📝 Tekan F10 untuk toggle GUI")
+        print("🚀 Monitoring telah dimulai secara otomatis")
+        print("🔧 Gunakan _G.ShowNetworkSpy() untuk debug GUI")
+    else
+        warn("❌ Error loading Network Spy: " .. tostring(error_msg))
+        warn("🔄 Mencoba ulang dalam 2 detik...")
+        wait(2)
+        pcall(function()
+            networkSpy:CreateGUI()
+            networkSpy:StartMonitoring()
+        end)
+    end
+end)
+
+-- Buat command global untuk akses mudah
+_G.NetworkSpy = networkSpy
+_G.ToggleNetworkSpy = function()
+    networkSpy:ToggleGUI()
+end
+_G.ShowNetworkSpy = function()
+    if not networkSpy.GUI then
+        networkSpy:CreateGUI()
+        print("🔍 Network Spy GUI dibuat manual")
+    else
+        print("🔍 Network Spy GUI sudah aktif")
+    end
 end
 
 return networkSpy
