@@ -1,5 +1,5 @@
--- ROBLOX NETWORK SPY REMOTE - ENHANCED VERSION
--- Monitor semua aktivitas network dengan detail lengkap dan fitur tambahan
+-- Roblox Network Spy Remote - Enhanced Version
+-- Auto-detect semua jenis remote events dan functions tanpa perlu tekan tombol start
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -7,9 +7,9 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local HttpService = game:GetService("HttpService")
-local TextService = game:GetService("TextService")
 local CoreGui = game:GetService("CoreGui")
 
+-- Tunggu hingga LocalPlayer tersedia
 local LocalPlayer = Players.LocalPlayer
 while not LocalPlayer do
     Players.PlayerAdded:Wait()
@@ -19,14 +19,12 @@ end
 -- Storage untuk data network
 local NetworkData = {}
 local ConnectionList = {}
-local IsMonitoring = false
+local IsMonitoring = true  -- Langsung aktif tanpa perlu start
 local MaxLogEntries = 1000
 local SelectedLogIndex = 0
 local SearchFilter = ""
 local TypeFilter = "All"
 local DirectionFilter = "All"
-local LogHistory = {}
-local HistoryIndex = 0
 
 -- Theme colors
 local Theme = {
@@ -49,28 +47,6 @@ local Theme = {
 -- Fungsi untuk mendapatkan timestamp
 local function GetTimeStamp()
     return os.date("%H:%M:%S", os.time())
-end
-
--- Fungsi untuk mendapatkan timestamp lengkap
-local function GetFullTimeStamp()
-    return os.date("%Y-%m-%d %H:%M:%S", os.time())
-end
-
--- Fungsi untuk deep copy table
-local function DeepCopy(original)
-    local copy = {}
-    for key, value in pairs(original) do
-        if type(value) == "table" then
-            copy[key] = DeepCopy(value)
-        else
-            if type(value) == "userdata" then
-                copy[key] = tostring(value)
-            else
-                copy[key] = value
-            end
-        end
-    end
-    return copy
 end
 
 -- Fungsi untuk format arguments
@@ -140,10 +116,6 @@ function NetworkSpy.new()
     self.GUI = nil
     self.LogFrame = nil
     self.DetailFrame = nil
-    self.CurrentPage = 1
-    self.ItemsPerPage = 20
-    self.FilterType = "All"
-    self.FilterDirection = "All"
     self.SearchText = ""
     return self
 end
@@ -156,12 +128,6 @@ function NetworkSpy:CreateGUI()
         self.GUI = nil
     end
     
-    -- Pastikan LocalPlayer tersedia
-    if not Players.LocalPlayer then
-        warn("LocalPlayer not available")
-        return nil
-    end
-    
     -- Main ScreenGui
     local screenGui = Instance.new("ScreenGui")
     screenGui.Name = "NetworkSpyGUI_" .. tostring(math.random(1, 10000))
@@ -169,18 +135,8 @@ function NetworkSpy:CreateGUI()
     screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     screenGui.Enabled = true
     
-    -- Coba parent ke CoreGui terlebih dahulu
+    -- Parent ke CoreGui untuk memastikan selalu terlihat
     screenGui.Parent = CoreGui
-    print("✅ GUI berhasil diparent ke CoreGui")
-    
-    -- Send notification
-    pcall(function()
-        game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = "Network Spy Remote",
-            Text = "GUI berhasil dimuat! Tekan F10 untuk toggle.",
-            Duration = 5
-        })
-    end)
     
     -- Main Frame
     local mainFrame = Instance.new("Frame")
@@ -199,20 +155,6 @@ function NetworkSpy:CreateGUI()
     corner.CornerRadius = UDim.new(0, 8)
     corner.Parent = mainFrame
     
-    -- Drop Shadow
-    local shadow = Instance.new("ImageLabel")
-    shadow.Name = "Shadow"
-    shadow.Size = UDim2.new(1, 10, 1, 10)
-    shadow.Position = UDim2.new(0, -5, 0, -5)
-    shadow.BackgroundTransparency = 1
-    shadow.Image = "rbxassetid://1316045217"
-    shadow.ImageColor3 = Color3.fromRGB(0, 0, 0)
-    shadow.ImageTransparency = 0.8
-    shadow.ScaleType = Enum.ScaleType.Slice
-    shadow.SliceCenter = Rect.new(10, 10, 118, 118)
-    shadow.ZIndex = -1
-    shadow.Parent = mainFrame
-    
     -- Title Bar
     local titleBar = Instance.new("Frame")
     titleBar.Name = "TitleBar"
@@ -220,22 +162,18 @@ function NetworkSpy:CreateGUI()
     titleBar.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
     titleBar.BorderSizePixel = 0
     titleBar.Parent = mainFrame
-
-    local titleCorner = Instance.new("UICorner")
-    titleCorner.CornerRadius = UDim.new(0, 8)
-    titleCorner.Parent = titleBar
-
+    
     local titleLabel = Instance.new("TextLabel")
     titleLabel.Size = UDim2.new(1, -100, 1, 0)
     titleLabel.Position = UDim2.new(0, 15, 0, 0)
     titleLabel.BackgroundTransparency = 1
-    titleLabel.Text = "🔍 Network Spy Remote - Advanced Activity Monitor"
+    titleLabel.Text = "🔍 Network Spy Remote - AUTO START"
     titleLabel.TextColor3 = Theme.Text
     titleLabel.TextSize = 16
     titleLabel.TextXAlignment = Enum.TextXAlignment.Left
     titleLabel.Font = Enum.Font.GothamBold
     titleLabel.Parent = titleBar
-
+    
     -- Close Button
     local closeBtn = Instance.new("TextButton")
     closeBtn.Size = UDim2.new(0, 30, 0, 30)
@@ -247,27 +185,11 @@ function NetworkSpy:CreateGUI()
     closeBtn.Font = Enum.Font.GothamBold
     closeBtn.BorderSizePixel = 0
     closeBtn.Parent = titleBar
-
+    
     local closeBtnCorner = Instance.new("UICorner")
     closeBtnCorner.CornerRadius = UDim.new(0, 4)
     closeBtnCorner.Parent = closeBtn
-
-    -- Minimize Button
-    local minimizeBtn = Instance.new("TextButton")
-    minimizeBtn.Size = UDim2.new(0, 30, 0, 30)
-    minimizeBtn.Position = UDim2.new(1, -70, 0, 5)
-    minimizeBtn.BackgroundColor3 = Theme.Warning
-    minimizeBtn.Text = "−"
-    minimizeBtn.TextSize = 18
-    minimizeBtn.TextColor3 = Theme.Text
-    minimizeBtn.Font = Enum.Font.GothamBold
-    minimizeBtn.BorderSizePixel = 0
-    minimizeBtn.Parent = titleBar
-
-    local minimizeBtnCorner = Instance.new("UICorner")
-    minimizeBtnCorner.CornerRadius = UDim.new(0, 4)
-    minimizeBtnCorner.Parent = minimizeBtn
-
+    
     -- Control Panel
     local controlPanel = Instance.new("Frame")
     controlPanel.Name = "ControlPanel"
@@ -276,32 +198,28 @@ function NetworkSpy:CreateGUI()
     controlPanel.BackgroundColor3 = Theme.Secondary
     controlPanel.BorderSizePixel = 0
     controlPanel.Parent = mainFrame
-
+    
     local controlCorner = Instance.new("UICorner")
     controlCorner.CornerRadius = UDim.new(0, 6)
     controlCorner.Parent = controlPanel
-
-    -- Start/Stop Button
-    local toggleBtn = Instance.new("TextButton")
-    toggleBtn.Name = "ToggleBtn"
-    toggleBtn.Size = UDim2.new(0, 100, 0, 30)
-    toggleBtn.Position = UDim2.new(0, 10, 0, 10)
-    toggleBtn.BackgroundColor3 = Theme.Success
-    toggleBtn.Text = "▶ START"
-    toggleBtn.TextSize = 12
-    toggleBtn.TextColor3 = Theme.Text
-    toggleBtn.Font = Enum.Font.GothamBold
-    toggleBtn.BorderSizePixel = 0
-    toggleBtn.Parent = controlPanel
-
-    local toggleCorner = Instance.new("UICorner")
-    toggleCorner.CornerRadius = UDim.new(0, 4)
-    toggleCorner.Parent = toggleBtn
-
+    
+    -- Status Label
+    local statusLabel = Instance.new("TextLabel")
+    statusLabel.Name = "StatusLabel"
+    statusLabel.Size = UDim2.new(0, 200, 0, 30)
+    statusLabel.Position = UDim2.new(1, -210, 0, 10)
+    statusLabel.BackgroundTransparency = 1
+    statusLabel.Text = "🟢 Status: Running | Logs: 0"
+    statusLabel.TextColor3 = Theme.SubText
+    statusLabel.TextSize = 11
+    statusLabel.TextXAlignment = Enum.TextXAlignment.Right
+    statusLabel.Font = Enum.Font.Gotham
+    statusLabel.Parent = controlPanel
+    
     -- Clear Button
     local clearBtn = Instance.new("TextButton")
     clearBtn.Size = UDim2.new(0, 80, 0, 30)
-    clearBtn.Position = UDim2.new(0, 120, 0, 10)
+    clearBtn.Position = UDim2.new(0, 10, 0, 10)
     clearBtn.BackgroundColor3 = Theme.Warning
     clearBtn.Text = "🗑 CLEAR"
     clearBtn.TextSize = 11
@@ -309,15 +227,15 @@ function NetworkSpy:CreateGUI()
     clearBtn.Font = Enum.Font.GothamBold
     clearBtn.BorderSizePixel = 0
     clearBtn.Parent = controlPanel
-
+    
     local clearCorner = Instance.new("UICorner")
     clearCorner.CornerRadius = UDim.new(0, 4)
     clearCorner.Parent = clearBtn
-
+    
     -- Save Button
     local saveBtn = Instance.new("TextButton")
     saveBtn.Size = UDim2.new(0, 80, 0, 30)
-    saveBtn.Position = UDim2.new(0, 210, 0, 10)
+    saveBtn.Position = UDim2.new(0, 100, 0, 10)
     saveBtn.BackgroundColor3 = Theme.Accent
     saveBtn.Text = "💾 SAVE"
     saveBtn.TextSize = 11
@@ -325,16 +243,16 @@ function NetworkSpy:CreateGUI()
     saveBtn.Font = Enum.Font.GothamBold
     saveBtn.BorderSizePixel = 0
     saveBtn.Parent = controlPanel
-
+    
     local saveCorner = Instance.new("UICorner")
     saveCorner.CornerRadius = UDim.new(0, 4)
     saveCorner.Parent = saveBtn
-
+    
     -- Search Box
     local searchBox = Instance.new("TextBox")
     searchBox.Name = "SearchBox"
     searchBox.Size = UDim2.new(0, 150, 0, 30)
-    searchBox.Position = UDim2.new(0, 300, 0, 10)
+    searchBox.Position = UDim2.new(0, 190, 0, 10)
     searchBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
     searchBox.TextColor3 = Theme.Text
     searchBox.Text = ""
@@ -344,16 +262,16 @@ function NetworkSpy:CreateGUI()
     searchBox.Font = Enum.Font.Gotham
     searchBox.ClearTextOnFocus = false
     searchBox.Parent = controlPanel
-
+    
     local searchCorner = Instance.new("UICorner")
     searchCorner.CornerRadius = UDim.new(0, 4)
     searchCorner.Parent = searchBox
-
+    
     -- Filter Dropdown (Type)
     local filterTypeBtn = Instance.new("TextButton")
     filterTypeBtn.Name = "FilterTypeBtn"
     filterTypeBtn.Size = UDim2.new(0, 120, 0, 30)
-    filterTypeBtn.Position = UDim2.new(0, 460, 0, 10)
+    filterTypeBtn.Position = UDim2.new(0, 350, 0, 10)
     filterTypeBtn.BackgroundColor3 = Theme.Accent
     filterTypeBtn.Text = "Type: All ▼"
     filterTypeBtn.TextSize = 11
@@ -361,16 +279,16 @@ function NetworkSpy:CreateGUI()
     filterTypeBtn.Font = Enum.Font.GothamBold
     filterTypeBtn.BorderSizePixel = 0
     filterTypeBtn.Parent = controlPanel
-
+    
     local filterTypeCorner = Instance.new("UICorner")
     filterTypeCorner.CornerRadius = UDim.new(0, 4)
     filterTypeCorner.Parent = filterTypeBtn
-
+    
     -- Filter Dropdown (Direction)
     local filterDirBtn = Instance.new("TextButton")
     filterDirBtn.Name = "FilterDirBtn"
     filterDirBtn.Size = UDim2.new(0, 120, 0, 30)
-    filterDirBtn.Position = UDim2.new(0, 590, 0, 10)
+    filterDirBtn.Position = UDim2.new(0, 480, 0, 10)
     filterDirBtn.BackgroundColor3 = Theme.Accent
     filterDirBtn.Text = "Direction: All ▼"
     filterDirBtn.TextSize = 11
@@ -378,24 +296,11 @@ function NetworkSpy:CreateGUI()
     filterDirBtn.Font = Enum.Font.GothamBold
     filterDirBtn.BorderSizePixel = 0
     filterDirBtn.Parent = controlPanel
-
+    
     local filterDirCorner = Instance.new("UICorner")
     filterDirCorner.CornerRadius = UDim.new(0, 4)
     filterDirCorner.Parent = filterDirBtn
-
-    -- Status Label
-    local statusLabel = Instance.new("TextLabel")
-    statusLabel.Name = "StatusLabel"
-    statusLabel.Size = UDim2.new(0, 200, 0, 30)
-    statusLabel.Position = UDim2.new(1, -210, 0, 10)
-    statusLabel.BackgroundTransparency = 1
-    statusLabel.Text = "Status: Stopped | Logs: 0"
-    statusLabel.TextColor3 = Theme.SubText
-    statusLabel.TextSize = 11
-    statusLabel.TextXAlignment = Enum.TextXAlignment.Right
-    statusLabel.Font = Enum.Font.Gotham
-    statusLabel.Parent = controlPanel
-
+    
     -- Main Content Frame
     local contentFrame = Instance.new("Frame")
     contentFrame.Name = "ContentFrame"
@@ -403,7 +308,7 @@ function NetworkSpy:CreateGUI()
     contentFrame.Position = UDim2.new(0, 10, 0, 110)
     contentFrame.BackgroundTransparency = 1
     contentFrame.Parent = mainFrame
-
+    
     -- Log Frame (Left Side)
     local logFrame = Instance.new("ScrollingFrame")
     logFrame.Name = "LogFrame"
@@ -415,11 +320,11 @@ function NetworkSpy:CreateGUI()
     logFrame.ScrollBarImageColor3 = Theme.Accent
     logFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
     logFrame.Parent = contentFrame
-
+    
     local logCorner = Instance.new("UICorner")
     logCorner.CornerRadius = UDim.new(0, 6)
     logCorner.Parent = logFrame
-
+    
     -- Detail Frame (Right Side)
     local detailFrame = Instance.new("ScrollingFrame")
     detailFrame.Name = "DetailFrame"
@@ -431,11 +336,11 @@ function NetworkSpy:CreateGUI()
     detailFrame.ScrollBarImageColor3 = Theme.Accent
     detailFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
     detailFrame.Parent = contentFrame
-
+    
     local detailCorner = Instance.new("UICorner")
     detailCorner.CornerRadius = UDim.new(0, 6)
     detailCorner.Parent = detailFrame
-
+    
     -- Detail Title
     local detailTitle = Instance.new("TextLabel")
     detailTitle.Size = UDim2.new(1, -20, 0, 30)
@@ -447,7 +352,7 @@ function NetworkSpy:CreateGUI()
     detailTitle.TextXAlignment = Enum.TextXAlignment.Left
     detailTitle.Font = Enum.Font.GothamBold
     detailTitle.Parent = detailFrame
-
+    
     -- Copy Button
     local copyBtn = Instance.new("TextButton")
     copyBtn.Size = UDim2.new(0, 80, 0, 25)
@@ -459,41 +364,41 @@ function NetworkSpy:CreateGUI()
     copyBtn.Font = Enum.Font.GothamBold
     copyBtn.BorderSizePixel = 0
     copyBtn.Parent = detailFrame
-
+    
     local copyCorner = Instance.new("UICorner")
     copyCorner.CornerRadius = UDim.new(0, 4)
     copyCorner.Parent = copyBtn
-
+    
     -- Layout untuk log frame
     local logLayout = Instance.new("UIListLayout")
     logLayout.SortOrder = Enum.SortOrder.LayoutOrder
     logLayout.Padding = UDim.new(0, 2)
     logLayout.Parent = logFrame
-
+    
     -- Layout untuk detail frame
     local detailLayout = Instance.new("UIListLayout")
     detailLayout.SortOrder = Enum.SortOrder.LayoutOrder
     detailLayout.Padding = UDim.new(0, 5)
     detailLayout.Parent = detailFrame
-
+    
     -- Filter Dropdown Menu (Type)
     local filterTypeMenu = Instance.new("Frame")
     filterTypeMenu.Name = "FilterTypeMenu"
     filterTypeMenu.Size = UDim2.new(0, 120, 0, 150)
-    filterTypeMenu.Position = UDim2.new(0, 460, 0, 45)
+    filterTypeMenu.Position = UDim2.new(0, 350, 0, 45)
     filterTypeMenu.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
     filterTypeMenu.BorderSizePixel = 0
     filterTypeMenu.Visible = false
     filterTypeMenu.ZIndex = 10
     filterTypeMenu.Parent = controlPanel
-
+    
     local filterTypeMenuCorner = Instance.new("UICorner")
     filterTypeMenuCorner.CornerRadius = UDim.new(0, 4)
     filterTypeMenuCorner.Parent = filterTypeMenu
-
+    
     local filterTypeLayout = Instance.new("UIListLayout")
     filterTypeLayout.Parent = filterTypeMenu
-
+    
     local typeFilters = {"All", "RemoteEvent", "RemoteFunction", "BindableEvent", "BindableFunction"}
     for _, filter in ipairs(typeFilters) do
         local filterBtn = Instance.new("TextButton")
@@ -513,25 +418,25 @@ function NetworkSpy:CreateGUI()
             self:UpdateLogDisplay()
         end)
     end
-
+    
     -- Filter Dropdown Menu (Direction)
     local filterDirMenu = Instance.new("Frame")
     filterDirMenu.Name = "FilterDirMenu"
     filterDirMenu.Size = UDim2.new(0, 120, 0, 100)
-    filterDirMenu.Position = UDim2.new(0, 590, 0, 45)
+    filterDirMenu.Position = UDim2.new(0, 480, 0, 45)
     filterDirMenu.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
     filterDirMenu.BorderSizePixel = 0
     filterDirMenu.Visible = false
     filterDirMenu.ZIndex = 10
     filterDirMenu.Parent = controlPanel
-
+    
     local filterDirMenuCorner = Instance.new("UICorner")
     filterDirMenuCorner.CornerRadius = UDim.new(0, 4)
     filterDirMenuCorner.Parent = filterDirMenu
-
+    
     local filterDirLayout = Instance.new("UIListLayout")
     filterDirLayout.Parent = filterDirMenu
-
+    
     local dirFilters = {"All", "Incoming", "Outgoing"}
     for _, filter in ipairs(dirFilters) do
         local filterBtn = Instance.new("TextButton")
@@ -551,59 +456,43 @@ function NetworkSpy:CreateGUI()
             self:UpdateLogDisplay()
         end)
     end
-
+    
     self.GUI = screenGui
     self.LogFrame = logFrame
     self.DetailFrame = detailFrame
-
-    -- Debug: Check if GUI is visible
-    print("🔧 GUI Created, Parent:", screenGui.Parent and screenGui.Parent.Name or "None")
-    print("🔧 MainFrame visible:", mainFrame.Visible)
-
-    -- Force visibility
-    mainFrame.Visible = true
-    screenGui.Enabled = true
-
+    
     -- Event Handlers
     closeBtn.MouseButton1Click:Connect(function()
         self:ToggleGUI()
     end)
-
-    minimizeBtn.MouseButton1Click:Connect(function()
-        self:MinimizeGUI()
-    end)
-
-    toggleBtn.MouseButton1Click:Connect(function()
-        self:ToggleMonitoring()
-    end)
-
+    
     clearBtn.MouseButton1Click:Connect(function()
         self:ClearLogs()
     end)
-
+    
     saveBtn.MouseButton1Click:Connect(function()
         self:SaveLogs()
     end)
-
+    
     copyBtn.MouseButton1Click:Connect(function()
         self:CopyDetails()
     end)
-
+    
     filterTypeBtn.MouseButton1Click:Connect(function()
         filterTypeMenu.Visible = not filterTypeMenu.Visible
         filterDirMenu.Visible = false
     end)
-
+    
     filterDirBtn.MouseButton1Click:Connect(function()
         filterDirMenu.Visible = not filterDirMenu.Visible
         filterTypeMenu.Visible = false
     end)
-
+    
     searchBox:GetPropertyChangedSignal("Text"):Connect(function()
         SearchFilter = searchBox.Text
         self:UpdateLogDisplay()
     end)
-
+    
     -- Close dropdowns when clicking elsewhere
     UserInputService.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -615,30 +504,7 @@ function NetworkSpy:CreateGUI()
             end
         end
     end)
-
-    -- Debug info setelah GUI dibuat
-    print("🔍 Debug Info:")
-    print("ScreenGui Parent: " .. tostring(screenGui.Parent))
-    print("ScreenGui Enabled: " .. tostring(screenGui.Enabled))
-    print("MainFrame Visible: " .. tostring(mainFrame.Visible))
-
-    -- Cek jika GUI ada di tree setelah 2 detik
-    delay(2, function()
-        if screenGui and screenGui.Parent then
-            print("✅ GUI masih ada setelah 2 detik")
-            -- Coba tampilkan notifikasi
-            pcall(function()
-                game:GetService("StarterGui"):SetCore("SendNotification", {
-                    Title = "Network Spy",
-                    Text = "GUI berhasil dimuat! Tekan F10 untuk toggle",
-                    Duration = 5
-                })
-            end)
-        else
-            print("❌ GUI hilang setelah 2 detik")
-        end
-    end)
-
+    
     return screenGui
 end
 
@@ -660,49 +526,12 @@ function NetworkSpy:ToggleGUI()
     end
 end
 
--- Minimize GUI
-function NetworkSpy:MinimizeGUI()
-    if not self.GUI then return end
-    
-    local mainFrame = self.GUI.MainFrame
-    local contentFrame = mainFrame.ContentFrame
-    local isMinimized = contentFrame.Visible
-    
-    if isMinimized then
-        -- Restore
-        contentFrame.Visible = true
-        mainFrame.Size = UDim2.new(0, 900, 0, 650)
-        self.GUI.MainFrame.TitleBar.MinimizeButton.Text = "−"
-    else
-        -- Minimize
-        contentFrame.Visible = false
-        mainFrame.Size = UDim2.new(0, 900, 0, 100)
-        self.GUI.MainFrame.TitleBar.MinimizeButton.Text = "+"
-    end
-end
-
--- Toggle monitoring
-function NetworkSpy:ToggleMonitoring()
-    if IsMonitoring then
-        self:StopMonitoring()
-    else
-        self:StartMonitoring()
-    end
-end
-
 -- Start monitoring
 function NetworkSpy:StartMonitoring()
     if IsMonitoring then return end
     
     IsMonitoring = true
     print("🔍 Network Spy Started - Monitoring all network activity...")
-    
-    -- Update button text
-    if self.GUI then
-        local toggleBtn = self.GUI.MainFrame.ControlPanel.ToggleBtn
-        toggleBtn.Text = "⏹ STOP"
-        toggleBtn.BackgroundColor3 = Theme.Error
-    end
     
     -- Hook RemoteEvents
     self:HookRemoteEvents()
@@ -718,31 +547,6 @@ function NetworkSpy:StartMonitoring()
     
     -- Monitor existing remotes
     self:MonitorExistingRemotes()
-    
-    self:UpdateStatus()
-end
-
--- Stop monitoring
-function NetworkSpy:StopMonitoring()
-    if not IsMonitoring then return end
-    
-    IsMonitoring = false
-    print("⏹ Network Spy Stopped")
-    
-    -- Update button text
-    if self.GUI then
-        local toggleBtn = self.GUI.MainFrame.ControlPanel.ToggleBtn
-        toggleBtn.Text = "▶ START"
-        toggleBtn.BackgroundColor3 = Theme.Success
-    end
-    
-    -- Disconnect all connections
-    for _, connection in ipairs(ConnectionList) do
-        if connection and connection.Disconnect then
-            connection:Disconnect()
-        end
-    end
-    ConnectionList = {}
     
     self:UpdateStatus()
 end
@@ -1055,17 +859,6 @@ function NetworkSpy:UpdateStatus()
         local status = IsMonitoring and "Running" or "Stopped"
         local color = IsMonitoring and "🟢" or "🔴"
         statusLabel.Text = string.format("%s Status: %s | Logs: %d", color, status, #NetworkData)
-    end
-    
-    local toggleBtn = self.GUI.MainFrame.ControlPanel:FindFirstChild("ToggleBtn")
-    if toggleBtn then
-        if IsMonitoring then
-            toggleBtn.Text = "⏸ STOP"
-            toggleBtn.BackgroundColor3 = Theme.Error
-        else
-            toggleBtn.Text = "▶ START"
-            toggleBtn.BackgroundColor3 = Theme.Success
-        end
     end
 end
 
@@ -1491,9 +1284,10 @@ UserInputService.InputBegan:Connect(function(input, processed)
     end
 end)
 
--- Auto-start GUI dan monitoring
+-- Auto-start monitoring tanpa perlu tekan tombol
 spawn(function()
-    wait(1) -- Wait a bit for game to load
+    wait(1) -- Tunggu game load
+    
     print("🔧 Memulai inisialisasi Network Spy...")
     
     local success, error_msg = pcall(function()
@@ -1519,11 +1313,6 @@ spawn(function()
         print("📝 Tekan F10 untuk toggle GUI")
         print("🚀 Monitoring telah dimulai secara otomatis")
         print("🔧 Gunakan _G.ShowNetworkSpy() untuk debug GUI")
-        print("🎯 Commands tersedia:")
-        print("   - _G.ToggleNetworkSpy() - Toggle GUI")
-        print("   - _G.ShowNetworkSpy() - Show GUI")
-        print("   - _G.NetworkSpy:ClearLogs() - Clear logs")
-        print("   - _G.NetworkSpy:SaveLogs() - Save logs")
     else
         warn("❌ Error loading Network Spy: " .. tostring(error_msg))
         warn("🔄 Mencoba ulang dalam 2 detik...")
