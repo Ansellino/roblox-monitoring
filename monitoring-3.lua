@@ -1,565 +1,1428 @@
--- Simple Roblox Remote Spy
--- Fokus pada Events Remote, Function Remote, dan detail parameter lengkap
+-- ROBLOX NETWORK SPY REMOTE - ENHANCED VERSION
+-- Monitor semua aktivitas network dengan detail lengkap dan fitur tambahan
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local HttpService = game:GetService("HttpService")
-local CoreGui = game:GetService("CoreGui")
+local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local HttpService = game:GetService("HttpService")
+local TextService = game:GetService("TextService")
+local CoreGui = game:GetService("CoreGui")
 
--- Configuration
-local Config = {
-    LogEvents = true,
-    LogFunctions = true,
-    MaxLogs = 500,
-    ShowUI = true
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+-- Storage untuk data network
+local NetworkData = {}
+local ConnectionList = {}
+local IsMonitoring = false
+local MaxLogEntries = 1000
+local SelectedLogIndex = 0
+local SearchFilter = ""
+local TypeFilter = "All"
+local DirectionFilter = "All"
+local LogHistory = {}
+local HistoryIndex = 0
+
+-- Theme colors
+local Theme = {
+    Background = Color3.fromRGB(30, 30, 30),
+    Secondary = Color3.fromRGB(40, 40, 40),
+    Item = Color3.fromRGB(35, 35, 35),
+    ItemHover = Color3.fromRGB(45, 45, 45),
+    Text = Color3.fromRGB(255, 255, 255),
+    SubText = Color3.fromRGB(200, 200, 200),
+    Accent = Color3.fromRGB(0, 162, 255),
+    Success = Color3.fromRGB(60, 200, 60),
+    Warning = Color3.fromRGB(255, 165, 0),
+    Error = Color3.fromRGB(255, 60, 60),
+    RemoteEvent = Color3.fromRGB(100, 200, 255),
+    RemoteFunction = Color3.fromRGB(255, 200, 100),
+    BindableEvent = Color3.fromRGB(200, 255, 100),
+    BindableFunction = Color3.fromRGB(200, 100, 255)
 }
 
--- Storage
-local RemoteLogs = {
-    Events = {},
-    Functions = {},
-    Count = 0
-}
+-- Fungsi untuk mendapatkan timestamp
+local function GetTimeStamp()
+    return os.date("%H:%M:%S", os.time())
+end
 
--- Utility Functions
-local function DeepSerialize(obj, depth)
-    depth = depth or 0
-    if depth > 5 then return "..." end
-    
-    local objType = typeof(obj)
-    
-    if objType == "table" then
-        local result = "{"
-        local count = 0
-        for k, v in pairs(obj) do
-            if count > 10 then
-                result = result .. ", ..."
-                break
+-- Fungsi untuk mendapatkan timestamp lengkap
+local function GetFullTimeStamp()
+    return os.date("%Y-%m-%d %H:%M:%S", os.time())
+end
+
+-- Fungsi untuk deep copy table
+local function DeepCopy(original)
+    local copy = {}
+    for key, value in pairs(original) do
+        if type(value) == "table" then
+            copy[key] = DeepCopy(value)
+        else
+            if type(value) == "userdata" then
+                copy[key] = tostring(value)
+            else
+                copy[key] = value
             end
-            if count > 0 then result = result .. ", " end
-            result = result .. "[" .. DeepSerialize(k, depth + 1) .. "] = " .. DeepSerialize(v, depth + 1)
-            count = count + 1
         end
-        return result .. "}"
-    elseif objType == "Instance" then
-        return string.format("Instance{%s: %s}", obj.ClassName, obj.Name)
-    elseif objType == "Vector3" then
-        return string.format("Vector3(%.2f, %.2f, %.2f)", obj.X, obj.Y, obj.Z)
-    elseif objType == "CFrame" then
-        local pos = obj.Position
-        return string.format("CFrame(%.2f, %.2f, %.2f, ...)", pos.X, pos.Y, pos.Z)
-    elseif objType == "Color3" then
-        return string.format("Color3(%.2f, %.2f, %.2f)", obj.R, obj.G, obj.B)
-    elseif objType == "EnumItem" then
-        return string.format("Enum.%s.%s", tostring(obj.EnumType), obj.Name)
-    elseif objType == "string" then
-        return string.format('"%s"', obj:sub(1, 100))
-    elseif objType == "number" then
-        return string.format("%.4f", obj)
-    elseif objType == "boolean" then
-        return tostring(obj)
-    elseif objType == "nil" then
-        return "nil"
+    end
+    return copy
+end
+
+-- Fungsi untuk format arguments
+local function FormatArgs(args, depth, maxDepth)
+    depth = depth or 1
+    maxDepth = maxDepth or 3
+    
+    if depth > maxDepth then
+        return "[Max Depth Reached]"
+    end
+    
+    local formatted = {}
+    for i, arg in ipairs(args) do
+        if type(arg) == "table" then
+            formatted[i] = "Table: " .. tostring(#arg) .. " items"
+            -- Add table content for shallow tables
+            if depth < maxDepth and #arg > 0 and #arg <= 10 then
+                formatted[i] = formatted[i] .. " {"
+                for k, v in pairs(arg) do
+                    if type(v) == "table" then
+                        formatted[i] = formatted[i] .. tostring(k) .. " = [Table], "
+                    else
+                        formatted[i] = formatted[i] .. tostring(k) .. " = " .. tostring(v) .. ", "
+                    end
+                end
+                formatted[i] = formatted[i]:sub(1, -3) .. "}"
+            end
+        elseif type(arg) == "userdata" then
+            formatted[i] = tostring(arg)
+        elseif type(arg) == "string" then
+            if #arg > 100 then
+                formatted[i] = "\"" .. arg:sub(1, 100) .. "...\""
+            else
+                formatted[i] = "\"" .. arg .. "\""
+            end
+        else
+            formatted[i] = tostring(arg)
+        end
+    end
+    return formatted
+end
+
+-- Fungsi untuk memeriksa apakah teks mengandung filter
+local function MatchesFilter(data, filter, typeFilter, directionFilter)
+    if filter == "" and typeFilter == "All" and directionFilter == "All" then
+        return true
+    end
+    
+    local filterMatch = filter == "" or 
+        string.find(data.Name:lower(), filter:lower()) or
+        string.find(data.FullName:lower(), filter:lower()) or
+        string.find(data.Type:lower(), filter:lower()) or
+        string.find(data.Direction:lower(), filter:lower())
+    
+    local typeMatch = typeFilter == "All" or data.Type == typeFilter
+    local directionMatch = directionFilter == "All" or data.Direction == directionFilter
+    
+    return filterMatch and typeMatch and directionMatch
+end
+
+-- Network Spy Class
+local NetworkSpy = {}
+NetworkSpy.__index = NetworkSpy
+
+function NetworkSpy.new()
+    local self = setmetatable({}, NetworkSpy)
+    self.GUI = nil
+    self.LogFrame = nil
+    self.DetailFrame = nil
+    self.CurrentPage = 1
+    self.ItemsPerPage = 20
+    self.FilterType = "All"
+    self.FilterDirection = "All"
+    self.SearchText = ""
+    return self
+end
+
+-- Membuat GUI Interface
+function NetworkSpy:CreateGUI()
+    -- Main ScreenGui
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "NetworkSpyGUI"
+    screenGui.ResetOnSpawn = false
+    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    screenGui.Parent = CoreGui
+    
+    -- Main Frame
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Name = "MainFrame"
+    mainFrame.Size = UDim2.new(0, 900, 0, 650)
+    mainFrame.Position = UDim2.new(0.5, -450, 0.5, -325)
+    mainFrame.BackgroundColor3 = Theme.Background
+    mainFrame.BorderSizePixel = 0
+    mainFrame.Active = true
+    mainFrame.Draggable = true
+    mainFrame.Parent = screenGui
+    
+    -- Corner untuk rounded
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = mainFrame
+    
+    -- Drop Shadow
+    local shadow = Instance.new("ImageLabel")
+    shadow.Name = "Shadow"
+    shadow.Size = UDim2.new(1, 10, 1, 10)
+    shadow.Position = UDim2.new(0, -5, 0, -5)
+    shadow.BackgroundTransparency = 1
+    shadow.Image = "rbxassetid://1316045217"
+    shadow.ImageColor3 = Color3.fromRGB(0, 0, 0)
+    shadow.ImageTransparency = 0.8
+    shadow.ScaleType = Enum.ScaleType.Slice
+    shadow.SliceCenter = Rect.new(10, 10, 118, 118)
+    shadow.ZIndex = -1
+    shadow.Parent = mainFrame
+    
+    -- Title Bar
+    local titleBar = Instance.new("Frame")
+    titleBar.Name = "TitleBar"
+    titleBar.Size = UDim2.new(1, 0, 0, 40)
+    titleBar.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    titleBar.BorderSizePixel = 0
+    titleBar.Parent = mainFrame
+    
+    local titleCorner = Instance.new("UICorner")
+    titleCorner.CornerRadius = UDim.new(0, 8)
+    titleCorner.Parent = titleBar
+    
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Size = UDim2.new(1, -100, 1, 0)
+    titleLabel.Position = UDim2.new(0, 15, 0, 0)
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.Text = "🔍 Network Spy Remote - Advanced Activity Monitor"
+    titleLabel.TextColor3 = Theme.Text
+    titleLabel.TextSize = 16
+    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    titleLabel.Font = Enum.Font.GothamBold
+    titleLabel.Parent = titleBar
+    
+    -- Close Button
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0, 30, 0, 30)
+    closeBtn.Position = UDim2.new(1, -35, 0, 5)
+    closeBtn.BackgroundColor3 = Theme.Error
+    closeBtn.Text = "×"
+    closeBtn.TextSize = 18
+    closeBtn.TextColor3 = Theme.Text
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.BorderSizePixel = 0
+    closeBtn.Parent = titleBar
+    
+    local closeBtnCorner = Instance.new("UICorner")
+    closeBtnCorner.CornerRadius = UDim.new(0, 4)
+    closeBtnCorner.Parent = closeBtn
+    
+    -- Minimize Button
+    local minimizeBtn = Instance.new("TextButton")
+    minimizeBtn.Size = UDim2.new(0, 30, 0, 30)
+    minimizeBtn.Position = UDim2.new(1, -70, 0, 5)
+    minimizeBtn.BackgroundColor3 = Theme.Warning
+    minimizeBtn.Text = "−"
+    minimizeBtn.TextSize = 18
+    minimizeBtn.TextColor3 = Theme.Text
+    minimizeBtn.Font = Enum.Font.GothamBold
+    minimizeBtn.BorderSizePixel = 0
+    minimizeBtn.Parent = titleBar
+    
+    local minimizeBtnCorner = Instance.new("UICorner")
+    minimizeBtnCorner.CornerRadius = UDim.new(0, 4)
+    minimizeBtnCorner.Parent = minimizeBtn
+    
+    -- Control Panel
+    local controlPanel = Instance.new("Frame")
+    controlPanel.Name = "ControlPanel"
+    controlPanel.Size = UDim2.new(1, -20, 0, 50)
+    controlPanel.Position = UDim2.new(0, 10, 0, 50)
+    controlPanel.BackgroundColor3 = Theme.Secondary
+    controlPanel.BorderSizePixel = 0
+    controlPanel.Parent = mainFrame
+    
+    local controlCorner = Instance.new("UICorner")
+    controlCorner.CornerRadius = UDim.new(0, 6)
+    controlCorner.Parent = controlPanel
+    
+    -- Start/Stop Button
+    local toggleBtn = Instance.new("TextButton")
+    toggleBtn.Name = "ToggleBtn"
+    toggleBtn.Size = UDim2.new(0, 100, 0, 30)
+    toggleBtn.Position = UDim2.new(0, 10, 0, 10)
+    toggleBtn.BackgroundColor3 = Theme.Success
+    toggleBtn.Text = "▶ START"
+    toggleBtn.TextSize = 12
+    toggleBtn.TextColor3 = Theme.Text
+    toggleBtn.Font = Enum.Font.GothamBold
+    toggleBtn.BorderSizePixel = 0
+    toggleBtn.Parent = controlPanel
+    
+    local toggleCorner = Instance.new("UICorner")
+    toggleCorner.CornerRadius = UDim.new(0, 4)
+    toggleCorner.Parent = toggleBtn
+    
+    -- Clear Button
+    local clearBtn = Instance.new("TextButton")
+    clearBtn.Size = UDim2.new(0, 80, 0, 30)
+    clearBtn.Position = UDim2.new(0, 120, 0, 10)
+    clearBtn.BackgroundColor3 = Theme.Warning
+    clearBtn.Text = "🗑 CLEAR"
+    clearBtn.TextSize = 11
+    clearBtn.TextColor3 = Theme.Text
+    clearBtn.Font = Enum.Font.GothamBold
+    clearBtn.BorderSizePixel = 0
+    clearBtn.Parent = controlPanel
+    
+    local clearCorner = Instance.new("UICorner")
+    clearCorner.CornerRadius = UDim.new(0, 4)
+    clearCorner.Parent = clearBtn
+    
+    -- Save Button
+    local saveBtn = Instance.new("TextButton")
+    saveBtn.Size = UDim2.new(0, 80, 0, 30)
+    saveBtn.Position = UDim2.new(0, 210, 0, 10)
+    saveBtn.BackgroundColor3 = Theme.Accent
+    saveBtn.Text = "💾 SAVE"
+    saveBtn.TextSize = 11
+    saveBtn.TextColor3 = Theme.Text
+    saveBtn.Font = Enum.Font.GothamBold
+    saveBtn.BorderSizePixel = 0
+    saveBtn.Parent = controlPanel
+    
+    local saveCorner = Instance.new("UICorner")
+    saveCorner.CornerRadius = UDim.new(0, 4)
+    saveCorner.Parent = saveBtn
+    
+    -- Search Box
+    local searchBox = Instance.new("TextBox")
+    searchBox.Name = "SearchBox"
+    searchBox.Size = UDim2.new(0, 150, 0, 30)
+    searchBox.Position = UDim2.new(0, 300, 0, 10)
+    searchBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    searchBox.TextColor3 = Theme.Text
+    searchBox.Text = ""
+    searchBox.PlaceholderText = "Search..."
+    searchBox.PlaceholderColor3 = Color3.fromRGB(150, 150, 150)
+    searchBox.TextSize = 12
+    searchBox.Font = Enum.Font.Gotham
+    searchBox.ClearTextOnFocus = false
+    searchBox.Parent = controlPanel
+    
+    local searchCorner = Instance.new("UICorner")
+    searchCorner.CornerRadius = UDim.new(0, 4)
+    searchCorner.Parent = searchBox
+    
+    -- Filter Dropdown (Type)
+    local filterTypeBtn = Instance.new("TextButton")
+    filterTypeBtn.Name = "FilterTypeBtn"
+    filterTypeBtn.Size = UDim2.new(0, 120, 0, 30)
+    filterTypeBtn.Position = UDim2.new(0, 460, 0, 10)
+    filterTypeBtn.BackgroundColor3 = Theme.Accent
+    filterTypeBtn.Text = "Type: All ▼"
+    filterTypeBtn.TextSize = 11
+    filterTypeBtn.TextColor3 = Theme.Text
+    filterTypeBtn.Font = Enum.Font.GothamBold
+    filterTypeBtn.BorderSizePixel = 0
+    filterTypeBtn.Parent = controlPanel
+    
+    local filterTypeCorner = Instance.new("UICorner")
+    filterTypeCorner.CornerRadius = UDim.new(0, 4)
+    filterTypeCorner.Parent = filterTypeBtn
+    
+    -- Filter Dropdown (Direction)
+    local filterDirBtn = Instance.new("TextButton")
+    filterDirBtn.Name = "FilterDirBtn"
+    filterDirBtn.Size = UDim2.new(0, 120, 0, 30)
+    filterDirBtn.Position = UDim2.new(0, 590, 0, 10)
+    filterDirBtn.BackgroundColor3 = Theme.Accent
+    filterDirBtn.Text = "Direction: All ▼"
+    filterDirBtn.TextSize = 11
+    filterDirBtn.TextColor3 = Theme.Text
+    filterDirBtn.Font = Enum.Font.GothamBold
+    filterDirBtn.BorderSizePixel = 0
+    filterDirBtn.Parent = controlPanel
+    
+    local filterDirCorner = Instance.new("UICorner")
+    filterDirCorner.CornerRadius = UDim.new(0, 4)
+    filterDirCorner.Parent = filterDirBtn
+    
+    -- Status Label
+    local statusLabel = Instance.new("TextLabel")
+    statusLabel.Name = "StatusLabel"
+    statusLabel.Size = UDim2.new(0, 200, 0, 30)
+    statusLabel.Position = UDim2.new(1, -210, 0, 10)
+    statusLabel.BackgroundTransparency = 1
+    statusLabel.Text = "Status: Stopped | Logs: 0"
+    statusLabel.TextColor3 = Theme.SubText
+    statusLabel.TextSize = 11
+    statusLabel.TextXAlignment = Enum.TextXAlignment.Right
+    statusLabel.Font = Enum.Font.Gotham
+    statusLabel.Parent = controlPanel
+    
+    -- Main Content Frame
+    local contentFrame = Instance.new("Frame")
+    contentFrame.Name = "ContentFrame"
+    contentFrame.Size = UDim2.new(1, -20, 1, -120)
+    contentFrame.Position = UDim2.new(0, 10, 0, 110)
+    contentFrame.BackgroundTransparency = 1
+    contentFrame.Parent = mainFrame
+    
+    -- Log Frame (Left Side)
+    local logFrame = Instance.new("ScrollingFrame")
+    logFrame.Name = "LogFrame"
+    logFrame.Size = UDim2.new(0.6, -10, 1, 0)
+    logFrame.Position = UDim2.new(0, 0, 0, 0)
+    logFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    logFrame.BorderSizePixel = 0
+    logFrame.ScrollBarThickness = 8
+    logFrame.ScrollBarImageColor3 = Theme.Accent
+    logFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+    logFrame.Parent = contentFrame
+    
+    local logCorner = Instance.new("UICorner")
+    logCorner.CornerRadius = UDim.new(0, 6)
+    logCorner.Parent = logFrame
+    
+    -- Detail Frame (Right Side)
+    local detailFrame = Instance.new("ScrollingFrame")
+    detailFrame.Name = "DetailFrame"
+    detailFrame.Size = UDim2.new(0.4, -10, 1, 0)
+    detailFrame.Position = UDim2.new(0.6, 10, 0, 0)
+    detailFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    detailFrame.BorderSizePixel = 0
+    detailFrame.ScrollBarThickness = 8
+    detailFrame.ScrollBarImageColor3 = Theme.Accent
+    detailFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+    detailFrame.Parent = contentFrame
+    
+    local detailCorner = Instance.new("UICorner")
+    detailCorner.CornerRadius = UDim.new(0, 6)
+    detailCorner.Parent = detailFrame
+    
+    -- Detail Title
+    local detailTitle = Instance.new("TextLabel")
+    detailTitle.Size = UDim2.new(1, -20, 0, 30)
+    detailTitle.Position = UDim2.new(0, 10, 0, 5)
+    detailTitle.BackgroundTransparency = 1
+    detailTitle.Text = "📋 Activity Details"
+    detailTitle.TextColor3 = Theme.SubText
+    detailTitle.TextSize = 14
+    detailTitle.TextXAlignment = Enum.TextXAlignment.Left
+    detailTitle.Font = Enum.Font.GothamBold
+    detailTitle.Parent = detailFrame
+    
+    -- Copy Button
+    local copyBtn = Instance.new("TextButton")
+    copyBtn.Size = UDim2.new(0, 80, 0, 25)
+    copyBtn.Position = UDim2.new(1, -90, 0, 5)
+    copyBtn.BackgroundColor3 = Theme.Accent
+    copyBtn.Text = "📋 Copy"
+    copyBtn.TextSize = 11
+    copyBtn.TextColor3 = Theme.Text
+    copyBtn.Font = Enum.Font.GothamBold
+    copyBtn.BorderSizePixel = 0
+    copyBtn.Parent = detailFrame
+    
+    local copyCorner = Instance.new("UICorner")
+    copyCorner.CornerRadius = UDim.new(0, 4)
+    copyCorner.Parent = copyBtn
+    
+    -- Layout untuk log frame
+    local logLayout = Instance.new("UIListLayout")
+    logLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    logLayout.Padding = UDim.new(0, 2)
+    logLayout.Parent = logFrame
+    
+    -- Layout untuk detail frame
+    local detailLayout = Instance.new("UIListLayout")
+    detailLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    detailLayout.Padding = UDim.new(0, 5)
+    detailLayout.Parent = detailFrame
+    
+    -- Filter Dropdown Menu (Type)
+    local filterTypeMenu = Instance.new("Frame")
+    filterTypeMenu.Name = "FilterTypeMenu"
+    filterTypeMenu.Size = UDim2.new(0, 120, 0, 150)
+    filterTypeMenu.Position = UDim2.new(0, 460, 0, 45)
+    filterTypeMenu.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    filterTypeMenu.BorderSizePixel = 0
+    filterTypeMenu.Visible = false
+    filterTypeMenu.ZIndex = 10
+    filterTypeMenu.Parent = controlPanel
+    
+    local filterTypeMenuCorner = Instance.new("UICorner")
+    filterTypeMenuCorner.CornerRadius = UDim.new(0, 4)
+    filterTypeMenuCorner.Parent = filterTypeMenu
+    
+    local filterTypeLayout = Instance.new("UIListLayout")
+    filterTypeLayout.Parent = filterTypeMenu
+    
+    local typeFilters = {"All", "RemoteEvent", "RemoteFunction", "BindableEvent", "BindableFunction"}
+    for _, filter in ipairs(typeFilters) do
+        local filterBtn = Instance.new("TextButton")
+        filterBtn.Size = UDim2.new(1, 0, 0, 30)
+        filterBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+        filterBtn.BorderSizePixel = 0
+        filterBtn.Text = filter
+        filterBtn.TextColor3 = Theme.Text
+        filterBtn.TextSize = 11
+        filterBtn.Font = Enum.Font.Gotham
+        filterBtn.Parent = filterTypeMenu
+        
+        filterBtn.MouseButton1Click:Connect(function()
+            TypeFilter = filter
+            filterTypeBtn.Text = "Type: " .. filter .. " ▼"
+            filterTypeMenu.Visible = false
+            self:UpdateLogDisplay()
+        end)
+    end
+    
+    -- Filter Dropdown Menu (Direction)
+    local filterDirMenu = Instance.new("Frame")
+    filterDirMenu.Name = "FilterDirMenu"
+    filterDirMenu.Size = UDim2.new(0, 120, 0, 100)
+    filterDirMenu.Position = UDim2.new(0, 590, 0, 45)
+    filterDirMenu.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    filterDirMenu.BorderSizePixel = 0
+    filterDirMenu.Visible = false
+    filterDirMenu.ZIndex = 10
+    filterDirMenu.Parent = controlPanel
+    
+    local filterDirMenuCorner = Instance.new("UICorner")
+    filterDirMenuCorner.CornerRadius = UDim.new(0, 4)
+    filterDirMenuCorner.Parent = filterDirMenu
+    
+    local filterDirLayout = Instance.new("UIListLayout")
+    filterDirLayout.Parent = filterDirMenu
+    
+    local dirFilters = {"All", "Incoming", "Outgoing"}
+    for _, filter in ipairs(dirFilters) do
+        local filterBtn = Instance.new("TextButton")
+        filterBtn.Size = UDim2.new(1, 0, 0, 30)
+        filterBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+        filterBtn.BorderSizePixel = 0
+        filterBtn.Text = filter
+        filterBtn.TextColor3 = Theme.Text
+        filterBtn.TextSize = 11
+        filterBtn.Font = Enum.Font.Gotham
+        filterBtn.Parent = filterDirMenu
+        
+        filterBtn.MouseButton1Click:Connect(function()
+            DirectionFilter = filter
+            filterDirBtn.Text = "Direction: " .. filter .. " ▼"
+            filterDirMenu.Visible = false
+            self:UpdateLogDisplay()
+        end)
+    end
+    
+    self.GUI = screenGui
+    self.LogFrame = logFrame
+    self.DetailFrame = detailFrame
+    
+    -- Event Handlers
+    closeBtn.MouseButton1Click:Connect(function()
+        self:ToggleGUI()
+    end)
+    
+    minimizeBtn.MouseButton1Click:Connect(function()
+        self:MinimizeGUI()
+    end)
+    
+    toggleBtn.MouseButton1Click:Connect(function()
+        self:ToggleMonitoring()
+    end)
+    
+    clearBtn.MouseButton1Click:Connect(function()
+        self:ClearLogs()
+    end)
+    
+    saveBtn.MouseButton1Click:Connect(function()
+        self:SaveLogs()
+    end)
+    
+    copyBtn.MouseButton1Click:Connect(function()
+        self:CopyDetails()
+    end)
+    
+    filterTypeBtn.MouseButton1Click:Connect(function()
+        filterTypeMenu.Visible = not filterTypeMenu.Visible
+        filterDirMenu.Visible = false
+    end)
+    
+    filterDirBtn.MouseButton1Click:Connect(function()
+        filterDirMenu.Visible = not filterDirMenu.Visible
+        filterTypeMenu.Visible = false
+    end)
+    
+    searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+        SearchFilter = searchBox.Text
+        self:UpdateLogDisplay()
+    end)
+    
+    -- Close dropdowns when clicking elsewhere
+    UserInputService.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            if filterTypeMenu.Visible then
+                filterTypeMenu.Visible = false
+            end
+            if filterDirMenu.Visible then
+                filterDirMenu.Visible = false
+            end
+        end
+    end)
+    
+    return screenGui
+end
+
+-- Toggle GUI visibility
+function NetworkSpy:ToggleGUI()
+    if self.GUI then
+        self.GUI:Destroy()
+        self.GUI = nil
     else
-        return string.format("%s: %s", objType, tostring(obj):sub(1, 50))
+        self:CreateGUI()
+        self:UpdateLogDisplay()
+        self:UpdateStatus()
     end
 end
 
-local function CreateLogEntry(remoteName, remoteType, direction, args, result)
-    local entry = {
-        ID = RemoteLogs.Count + 1,
-        Time = os.date("%H:%M:%S"),
-        Timestamp = tick(),
-        RemoteName = remoteName,
-        RemoteType = remoteType,
-        Direction = direction,
-        Arguments = {},
-        Result = result,
-        Traceback = debug.traceback():match("(.-)%s*\n.*NetworkMonitor") or "Unknown"
-    }
+-- Minimize GUI
+function NetworkSpy:MinimizeGUI()
+    if not self.GUI then return end
     
-    -- Serialize arguments with detailed info
-    for i, arg in ipairs(args) do
-        entry.Arguments[i] = {
-            Type = typeof(arg),
-            Value = DeepSerialize(arg),
-            Raw = arg
-        }
+    local mainFrame = self.GUI.MainFrame
+    local contentFrame = mainFrame.ContentFrame
+    local isMinimized = contentFrame.Visible
+    
+    if isMinimized then
+        -- Restore
+        contentFrame.Visible = true
+        mainFrame.Size = UDim2.new(0, 900, 0, 650)
+        self.GUI.MainFrame.TitleBar.MinimizeButton.Text = "−"
+    else
+        -- Minimize
+        contentFrame.Visible = false
+        mainFrame.Size = UDim2.new(0, 900, 0, 100)
+        self.GUI.MainFrame.TitleBar.MinimizeButton.Text = "+"
+    end
+end
+
+-- Toggle monitoring
+function NetworkSpy:ToggleMonitoring()
+    if IsMonitoring then
+        self:StopMonitoring()
+    else
+        self:StartMonitoring()
+    end
+end
+
+-- Start monitoring
+function NetworkSpy:StartMonitoring()
+    if IsMonitoring then return end
+    
+    IsMonitoring = true
+    print("🔍 Network Spy Started - Monitoring all network activity...")
+    
+    -- Update button text
+    if self.GUI then
+        local toggleBtn = self.GUI.MainFrame.ControlPanel.ToggleBtn
+        toggleBtn.Text = "⏹ STOP"
+        toggleBtn.BackgroundColor3 = Theme.Error
     end
     
-    RemoteLogs.Count = RemoteLogs.Count + 1
+    -- Hook RemoteEvents
+    self:HookRemoteEvents()
+    
+    -- Hook RemoteFunctions
+    self:HookRemoteFunctions()
+    
+    -- Hook BindableEvents
+    self:HookBindableEvents()
+    
+    -- Hook BindableFunctions
+    self:HookBindableFunctions()
+    
+    -- Monitor existing remotes
+    self:MonitorExistingRemotes()
+    
+    self:UpdateStatus()
+end
+
+-- Stop monitoring
+function NetworkSpy:StopMonitoring()
+    if not IsMonitoring then return end
+    
+    IsMonitoring = false
+    print("⏹ Network Spy Stopped")
+    
+    -- Update button text
+    if self.GUI then
+        local toggleBtn = self.GUI.MainFrame.ControlPanel.ToggleBtn
+        toggleBtn.Text = "▶ START"
+        toggleBtn.BackgroundColor3 = Theme.Success
+    end
+    
+    -- Disconnect all connections
+    for _, connection in ipairs(ConnectionList) do
+        if connection and connection.Disconnect then
+            connection:Disconnect()
+        end
+    end
+    ConnectionList = {}
+    
+    self:UpdateStatus()
+end
+
+-- Hook RemoteEvents
+function NetworkSpy:HookRemoteEvents()
+    -- Monitor existing RemoteEvents
+    for _, child in ipairs(ReplicatedStorage:GetDescendants()) do
+        if child:IsA("RemoteEvent") then
+            self:HookRemoteEvent(child)
+        end
+    end
+    
+    -- Monitor new RemoteEvents
+    local connection = ReplicatedStorage.DescendantAdded:Connect(function(child)
+        if child:IsA("RemoteEvent") then
+            self:HookRemoteEvent(child)
+        end
+    end)
+    table.insert(ConnectionList, connection)
+end
+
+-- Hook individual RemoteEvent
+function NetworkSpy:HookRemoteEvent(remote)
+    if not remote or not remote.Parent then return end
+    
+    local connection = remote.OnClientEvent:Connect(function(...)
+        if not IsMonitoring then return end
+        
+        local args = {...}
+        local data = {
+            Type = "RemoteEvent",
+            Name = remote.Name,
+            FullName = remote:GetFullName(),
+            Direction = "Incoming",
+            Arguments = FormatArgs(args),
+            ArgumentCount = #args,
+            TimeStamp = GetTimeStamp(),
+            RawArgs = args,
+            Remote = remote
+        }
+        
+        self:LogNetworkActivity(data)
+    end)
+    
+    table.insert(ConnectionList, connection)
+    
+    -- Hook outgoing FireServer calls
+    local oldFireServer = remote.FireServer
+    remote.FireServer = function(self, ...)
+        if IsMonitoring then
+            local args = {...}
+            local data = {
+                Type = "RemoteEvent",
+                Name = remote.Name,
+                FullName = remote:GetFullName(),
+                Direction = "Outgoing",
+                Arguments = FormatArgs(args),
+                ArgumentCount = #args,
+                TimeStamp = GetTimeStamp(),
+                RawArgs = args,
+                Remote = remote
+            }
+            
+            self:LogNetworkActivity(data)
+        end
+        
+        return oldFireServer(self, ...)
+    end
+end
+
+-- Hook RemoteFunctions
+function NetworkSpy:HookRemoteFunctions()
+    -- Monitor existing RemoteFunctions
+    for _, child in ipairs(ReplicatedStorage:GetDescendants()) do
+        if child:IsA("RemoteFunction") then
+            self:HookRemoteFunction(child)
+        end
+    end
+    
+    -- Monitor new RemoteFunctions
+    local connection = ReplicatedStorage.DescendantAdded:Connect(function(child)
+        if child:IsA("RemoteFunction") then
+            self:HookRemoteFunction(child)
+        end
+    end)
+    table.insert(ConnectionList, connection)
+end
+
+-- Hook individual RemoteFunction
+function NetworkSpy:HookRemoteFunction(remote)
+    if not remote or not remote.Parent then return end
+    
+    -- Store original function if exists
+    local originalFunction = remote.OnClientInvoke
+    
+    remote.OnClientInvoke = function(...)
+        if IsMonitoring then
+            local args = {...}
+            local data = {
+                Type = "RemoteFunction",
+                Name = remote.Name,
+                FullName = remote:GetFullName(),
+                Direction = "Incoming",
+                Arguments = FormatArgs(args),
+                ArgumentCount = #args,
+                TimeStamp = GetTimeStamp(),
+                RawArgs = args,
+                Remote = remote
+            }
+            
+            self:LogNetworkActivity(data)
+        end
+        
+        -- Call original function if it exists
+        if originalFunction then
+            return originalFunction(...)
+        end
+    end
+    
+    -- Hook outgoing InvokeServer calls
+    local oldInvokeServer = remote.InvokeServer
+    remote.InvokeServer = function(self, ...)
+        if IsMonitoring then
+            local args = {...}
+            local data = {
+                Type = "RemoteFunction",
+                Name = remote.Name,
+                FullName = remote:GetFullName(),
+                Direction = "Outgoing",
+                Arguments = FormatArgs(args),
+                ArgumentCount = #args,
+                TimeStamp = GetTimeStamp(),
+                RawArgs = args,
+                Remote = remote
+            }
+            
+            self:LogNetworkActivity(data)
+        end
+        
+        return oldInvokeServer(self, ...)
+    end
+end
+
+-- Hook BindableEvents
+function NetworkSpy:HookBindableEvents()
+    -- Monitor existing BindableEvents
+    for _, child in ipairs(game:GetDescendants()) do
+        if child:IsA("BindableEvent") and child.Parent and child.Parent ~= script then
+            self:HookBindableEvent(child)
+        end
+    end
+    
+    -- Monitor new BindableEvents
+    local connection = game.DescendantAdded:Connect(function(child)
+        if child:IsA("BindableEvent") and child.Parent and child.Parent ~= script then
+            self:HookBindableEvent(child)
+        end
+    end)
+    table.insert(ConnectionList, connection)
+end
+
+-- Hook individual BindableEvent
+function NetworkSpy:HookBindableEvent(bindable)
+    if not bindable or not bindable.Parent then return end
+    
+    local connection = bindable.Event:Connect(function(...)
+        if not IsMonitoring then return end
+        
+        local args = {...}
+        local data = {
+            Type = "BindableEvent",
+            Name = bindable.Name,
+            FullName = bindable:GetFullName(),
+            Direction = "Incoming",
+            Arguments = FormatArgs(args),
+            ArgumentCount = #args,
+            TimeStamp = GetTimeStamp(),
+            RawArgs = args,
+            Remote = bindable
+        }
+        
+        self:LogNetworkActivity(data)
+    end)
+    
+    table.insert(ConnectionList, connection)
+    
+    -- Hook outgoing Fire calls
+    local oldFire = bindable.Fire
+    bindable.Fire = function(self, ...)
+        if IsMonitoring then
+            local args = {...}
+            local data = {
+                Type = "BindableEvent",
+                Name = bindable.Name,
+                FullName = bindable:GetFullName(),
+                Direction = "Outgoing",
+                Arguments = FormatArgs(args),
+                ArgumentCount = #args,
+                TimeStamp = GetTimeStamp(),
+                RawArgs = args,
+                Remote = bindable
+            }
+            
+            self:LogNetworkActivity(data)
+        end
+        
+        return oldFire(self, ...)
+    end
+end
+
+-- Hook BindableFunctions
+function NetworkSpy:HookBindableFunctions()
+    -- Monitor existing BindableFunctions
+    for _, child in ipairs(game:GetDescendants()) do
+        if child:IsA("BindableFunction") and child.Parent and child.Parent ~= script then
+            self:HookBindableFunction(child)
+        end
+    end
+    
+    -- Monitor new BindableFunctions
+    local connection = game.DescendantAdded:Connect(function(child)
+        if child:IsA("BindableFunction") and child.Parent and child.Parent ~= script then
+            self:HookBindableFunction(child)
+        end
+    end)
+    table.insert(ConnectionList, connection)
+end
+
+-- Hook individual BindableFunction
+function NetworkSpy:HookBindableFunction(bindable)
+    if not bindable or not bindable.Parent then return end
+    
+    -- Store original function if exists
+    local originalFunction = bindable.OnInvoke
+    
+    bindable.OnInvoke = function(...)
+        if IsMonitoring then
+            local args = {...}
+            local data = {
+                Type = "BindableFunction",
+                Name = bindable.Name,
+                FullName = bindable:GetFullName(),
+                Direction = "Incoming",
+                Arguments = FormatArgs(args),
+                ArgumentCount = #args,
+                TimeStamp = GetTimeStamp(),
+                RawArgs = args,
+                Remote = bindable
+            }
+            
+            self:LogNetworkActivity(data)
+        end
+        
+        -- Call original function if it exists
+        if originalFunction then
+            return originalFunction(...)
+        end
+    end
+    
+    -- Hook outgoing Invoke calls
+    local oldInvoke = bindable.Invoke
+    bindable.Invoke = function(self, ...)
+        if IsMonitoring then
+            local args = {...}
+            local data = {
+                Type = "BindableFunction",
+                Name = bindable.Name,
+                FullName = bindable:GetFullName(),
+                Direction = "Outgoing",
+                Arguments = FormatArgs(args),
+                ArgumentCount = #args,
+                TimeStamp = GetTimeStamp(),
+                RawArgs = args,
+                Remote = bindable
+            }
+            
+            self:LogNetworkActivity(data)
+        end
+        
+        return oldInvoke(self, ...)
+    end
+end
+
+-- Monitor existing remotes for outgoing calls
+function NetworkSpy:MonitorExistingRemotes()
+    -- This would require hooking into the actual fire/invoke methods
+    -- which is more complex and may require additional techniques
+end
+
+-- Log network activity
+function NetworkSpy:LogNetworkActivity(data)
+    table.insert(NetworkData, data)
+    
+    -- Limit log entries
+    if #NetworkData > MaxLogEntries then
+        table.remove(NetworkData, 1)
+    end
+    
+    self:UpdateLogDisplay()
+    self:UpdateStatus()
+end
+
+-- Update log display
+function NetworkSpy:UpdateLogDisplay()
+    if not self.GUI or not self.LogFrame then return end
+    
+    -- Clear existing entries
+    for _, child in ipairs(self.LogFrame:GetChildren()) do
+        if child:IsA("Frame") then
+            child:Destroy()
+        end
+    end
+    
+    -- Apply filters and add log entries
+    local displayIndex = 1
+    for i, data in ipairs(NetworkData) do
+        if MatchesFilter(data, SearchFilter, TypeFilter, DirectionFilter) then
+            local logEntry = self:CreateLogEntry(data, i, displayIndex)
+            logEntry.Parent = self.LogFrame
+            displayIndex = displayIndex + 1
+        end
+    end
+    
+    -- Update canvas size
+    self.LogFrame.CanvasSize = UDim2.new(0, 0, 0, displayIndex * 52)
+end
+
+-- Create log entry
+function NetworkSpy:CreateLogEntry(data, index, displayIndex)
+    local entry = Instance.new("Frame")
+    entry.Size = UDim2.new(1, -10, 0, 50)
+    entry.BackgroundColor3 = Theme.Item
+    entry.BorderSizePixel = 0
+    entry.LayoutOrder = displayIndex
+    entry.Name = "LogEntry_" .. index
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 4)
+    corner.Parent = entry
+    
+    -- Type indicator
+    local typeColor = Theme.SubText
+    if data.Type == "RemoteEvent" then
+        typeColor = Theme.RemoteEvent
+    elseif data.Type == "RemoteFunction" then
+        typeColor = Theme.RemoteFunction
+    elseif data.Type == "BindableEvent" then
+        typeColor = Theme.BindableEvent
+    elseif data.Type == "BindableFunction" then
+        typeColor = Theme.BindableFunction
+    end
+    
+    local typeLabel = Instance.new("TextLabel")
+    typeLabel.Size = UDim2.new(0, 80, 1, 0)
+    typeLabel.Position = UDim2.new(0, 5, 0, 0)
+    typeLabel.BackgroundTransparency = 1
+    typeLabel.Text = data.Type
+    typeLabel.TextColor3 = typeColor
+    typeLabel.TextSize = 10
+    typeLabel.TextXAlignment = Enum.TextXAlignment.Left
+    typeLabel.Font = Enum.Font.GothamBold
+    typeLabel.Parent = entry
+    
+    -- Name label
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Size = UDim2.new(0, 150, 0, 20)
+    nameLabel.Position = UDim2.new(0, 90, 0, 5)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Text = data.Name
+    nameLabel.TextColor3 = Theme.Text
+    nameLabel.TextSize = 12
+    nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+    nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+    nameLabel.Font = Enum.Font.Gotham
+    nameLabel.Parent = entry
+    
+    -- Direction label
+    local directionLabel = Instance.new("TextLabel")
+    directionLabel.Size = UDim2.new(0, 80, 0, 15)
+    directionLabel.Position = UDim2.new(0, 90, 0, 25)
+    directionLabel.BackgroundTransparency = 1
+    directionLabel.Text = data.Direction
+    directionLabel.TextColor3 = Theme.SubText
+    directionLabel.TextSize = 10
+    directionLabel.TextXAlignment = Enum.TextXAlignment.Left
+    directionLabel.Font = Enum.Font.Gotham
+    directionLabel.Parent = entry
+    
+    -- Argument count
+    local argLabel = Instance.new("TextLabel")
+    argLabel.Size = UDim2.new(0, 100, 0, 15)
+    argLabel.Position = UDim2.new(0, 250, 0, 5)
+    argLabel.BackgroundTransparency = 1
+    argLabel.Text = "Args: " .. data.ArgumentCount
+    argLabel.TextColor3 = Theme.SubText
+    argLabel.TextSize = 10
+    argLabel.TextXAlignment = Enum.TextXAlignment.Left
+    argLabel.Font = Enum.Font.Gotham
+    argLabel.Parent = entry
+    
+    -- Time stamp
+    local timeLabel = Instance.new("TextLabel")
+    timeLabel.Size = UDim2.new(0, 100, 0, 15)
+    timeLabel.Position = UDim2.new(0, 250, 0, 25)
+    timeLabel.BackgroundTransparency = 1
+    timeLabel.Text = data.TimeStamp
+    timeLabel.TextColor3 = Theme.SubText
+    timeLabel.TextSize = 9
+    timeLabel.TextXAlignment = Enum.TextXAlignment.Left
+    timeLabel.Font = Enum.Font.Gotham
+    timeLabel.Parent = entry
+    
+    -- Click handler for details
+    local clickButton = Instance.new("TextButton")
+    clickButton.Size = UDim2.new(1, 0, 1, 0)
+    clickButton.BackgroundTransparency = 1
+    clickButton.Text = ""
+    clickButton.Parent = entry
+    
+    clickButton.MouseButton1Click:Connect(function()
+        SelectedLogIndex = index
+        self:ShowDetails(data)
+        
+        -- Highlight selected entry
+        for _, child in ipairs(self.LogFrame:GetChildren()) do
+            if child:IsA("Frame") then
+                if child.Name == "LogEntry_" .. index then
+                    child.BackgroundColor3 = Theme.Accent
+                    local tween = TweenService:Create(child, TweenInfo.new(0.2), {
+                        BackgroundColor3 = Theme.ItemHover
+                    })
+                    tween:Play()
+                else
+                    child.BackgroundColor3 = Theme.Item
+                end
+            end
+        end
+    end)
+    
+    -- Hover effect
+    clickButton.MouseEnter:Connect(function()
+        if entry.Name ~= "LogEntry_" .. SelectedLogIndex then
+            entry.BackgroundColor3 = Theme.ItemHover
+        end
+    end)
+    
+    clickButton.MouseLeave:Connect(function()
+        if entry.Name ~= "LogEntry_" .. SelectedLogIndex then
+            entry.BackgroundColor3 = Theme.Item
+        end
+    end)
+    
     return entry
 end
 
--- UI Creation
-local function CreateSimpleUI()
-    local ScreenGui = Instance.new("ScreenGui")
-    ScreenGui.Name = "RemoteSpyUI"
-    ScreenGui.ResetOnSpawn = false
+-- Show detailed information
+function NetworkSpy:ShowDetails(data)
+    if not self.GUI or not self.DetailFrame then return end
     
-    pcall(function()
-        ScreenGui.Parent = CoreGui
-    end)
-    if not ScreenGui.Parent then
-        ScreenGui.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+    -- Clear existing details
+    for _, child in ipairs(self.DetailFrame:GetChildren()) do
+        if child:IsA("TextLabel") and child.Name ~= "DetailTitle" then
+            child:Destroy()
+        elseif child:IsA("Frame") then
+            child:Destroy()
+        end
     end
     
-    -- Main Frame
-    local Main = Instance.new("Frame")
-    Main.Size = UDim2.new(0, 600, 0, 400)
-    Main.Position = UDim2.new(0.5, -300, 0.5, -200)
-    Main.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-    Main.BorderSizePixel = 0
-    Main.Parent = ScreenGui
+    local yOffset = 40
     
-    local Corner = Instance.new("UICorner")
-    Corner.CornerRadius = UDim.new(0, 8)
-    Corner.Parent = Main
-    
-    -- Title
-    local Title = Instance.new("TextLabel")
-    Title.Size = UDim2.new(1, -100, 0, 30)
-    Title.Position = UDim2.new(0, 10, 0, 5)
-    Title.BackgroundTransparency = 1
-    Title.Text = "🔍 Remote Spy - Simple"
-    Title.TextColor3 = Color3.fromRGB(255, 255, 255)
-    Title.TextScaled = true
-    Title.Font = Enum.Font.SourceSansBold
-    Title.TextXAlignment = Enum.TextXAlignment.Left
-    Title.Parent = Main
-    
-    -- Close Button
-    local CloseBtn = Instance.new("TextButton")
-    CloseBtn.Size = UDim2.new(0, 25, 0, 25)
-    CloseBtn.Position = UDim2.new(1, -30, 0, 5)
-    CloseBtn.BackgroundColor3 = Color3.fromRGB(200, 0, 0)
-    CloseBtn.Text = "X"
-    CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    CloseBtn.Font = Enum.Font.SourceSansBold
-    CloseBtn.TextScaled = true
-    CloseBtn.Parent = Main
-    
-    local CloseCorner = Instance.new("UICorner")
-    CloseCorner.CornerRadius = UDim.new(0, 4)
-    CloseCorner.Parent = CloseBtn
-    
-    -- Control Panel
-    local Controls = Instance.new("Frame")
-    Controls.Size = UDim2.new(1, -20, 0, 40)
-    Controls.Position = UDim2.new(0, 10, 0, 40)
-    Controls.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-    Controls.Parent = Main
-    
-    local ControlsCorner = Instance.new("UICorner")
-    ControlsCorner.CornerRadius = UDim.new(0, 5)
-    ControlsCorner.Parent = Controls
-    
-    -- Filter Buttons
-    local EventsBtn = Instance.new("TextButton")
-    EventsBtn.Size = UDim2.new(0, 80, 0, 30)
-    EventsBtn.Position = UDim2.new(0, 5, 0, 5)
-    EventsBtn.BackgroundColor3 = Config.LogEvents and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(100, 100, 100)
-    EventsBtn.Text = "Events"
-    EventsBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    EventsBtn.Font = Enum.Font.SourceSans
-    EventsBtn.TextScaled = true
-    EventsBtn.Parent = Controls
-    
-    local FunctionsBtn = Instance.new("TextButton")
-    FunctionsBtn.Size = UDim2.new(0, 80, 0, 30)
-    FunctionsBtn.Position = UDim2.new(0, 90, 0, 5)
-    FunctionsBtn.BackgroundColor3 = Config.LogFunctions and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(100, 100, 100)
-    FunctionsBtn.Text = "Functions"
-    FunctionsBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    FunctionsBtn.Font = Enum.Font.SourceSans
-    FunctionsBtn.TextScaled = true
-    FunctionsBtn.Parent = Controls
-    
-    local ClearBtn = Instance.new("TextButton")
-    ClearBtn.Size = UDim2.new(0, 60, 0, 30)
-    ClearBtn.Position = UDim2.new(0, 180, 0, 5)
-    ClearBtn.BackgroundColor3 = Color3.fromRGB(150, 100, 0)
-    ClearBtn.Text = "Clear"
-    ClearBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    ClearBtn.Font = Enum.Font.SourceSans
-    ClearBtn.TextScaled = true
-    ClearBtn.Parent = Controls
-    
-    local ExportBtn = Instance.new("TextButton")
-    ExportBtn.Size = UDim2.new(0, 60, 0, 30)
-    ExportBtn.Position = UDim2.new(0, 245, 0, 5)
-    ExportBtn.BackgroundColor3 = Color3.fromRGB(0, 100, 150)
-    ExportBtn.Text = "Export"
-    ExportBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    ExportBtn.Font = Enum.Font.SourceSans
-    ExportBtn.TextScaled = true
-    ExportBtn.Parent = Controls
-    
-    -- Logs Display
-    local LogsFrame = Instance.new("ScrollingFrame")
-    LogsFrame.Size = UDim2.new(1, -20, 1, -90)
-    LogsFrame.Position = UDim2.new(0, 10, 0, 85)
-    LogsFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-    LogsFrame.BorderSizePixel = 0
-    LogsFrame.ScrollBarThickness = 8
-    LogsFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
-    LogsFrame.Parent = Main
-    
-    local LogsCorner = Instance.new("UICorner")
-    LogsCorner.CornerRadius = UDim.new(0, 5)
-    LogsCorner.Parent = LogsFrame
-    
-    local LogsLayout = Instance.new("UIListLayout")
-    LogsLayout.Padding = UDim.new(0, 2)
-    LogsLayout.Parent = LogsFrame
-    
-    -- Make draggable
-    local dragging = false
-    local dragStart, startPos
-    
-    Title.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = true
-            dragStart = input.Position
-            startPos = Main.Position
-        end
-    end)
-    
-    UserInputService.InputChanged:Connect(function(input)
-        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-            local delta = input.Position - dragStart
-            Main.Position = UDim2.new(
-                startPos.X.Scale,
-                startPos.X.Offset + delta.X,
-                startPos.Y.Scale,
-                startPos.Y.Offset + delta.Y
-            )
-        end
-    end)
-    
-    UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = false
-        end
-    end)
-    
-    return {
-        Main = Main,
-        LogsFrame = LogsFrame,
-        EventsBtn = EventsBtn,
-        FunctionsBtn = FunctionsBtn,
-        ClearBtn = ClearBtn,
-        ExportBtn = ExportBtn,
-        CloseBtn = CloseBtn
+    -- Create detail sections
+    local details = {
+        {"🏷️ Name:", data.Name},
+        {"📍 Full Path:", data.FullName},
+        {"📊 Type:", data.Type},
+        {"↗️ Direction:", data.Direction},
+        {"🕒 Time:", data.TimeStamp},
+        {"📦 Argument Count:", tostring(data.ArgumentCount)}
     }
-end
-
-local UI = CreateSimpleUI()
-
--- Function to add log to UI
-local function AddLogToUI(logEntry)
-    if not UI or not UI.LogsFrame then return end
     
-    local LogItem = Instance.new("Frame")
-    LogItem.Size = UDim2.new(1, -10, 0, 0) -- Height will be determined by content
-    LogItem.BackgroundColor3 = logEntry.RemoteType == "RemoteEvent" and Color3.fromRGB(40, 40, 60) or Color3.fromRGB(60, 40, 40)
-    LogItem.BorderSizePixel = 0
-    LogItem.Parent = UI.LogsFrame
-    
-    local ItemCorner = Instance.new("UICorner")
-    ItemCorner.CornerRadius = UDim.new(0, 3)
-    ItemCorner.Parent = LogItem
-    
-    -- Header with remote info
-    local Header = Instance.new("TextLabel")
-    Header.Size = UDim2.new(1, -10, 0, 25)
-    Header.Position = UDim2.new(0, 5, 0, 2)
-    Header.BackgroundTransparency = 1
-    Header.Text = string.format("[%s] %s - %s (%s)", 
-        logEntry.Time, 
-        logEntry.RemoteType, 
-        logEntry.RemoteName:match("([^%.]+)$") or logEntry.RemoteName,
-        logEntry.Direction
-    )
-    Header.TextColor3 = Color3.fromRGB(255, 255, 255)
-    Header.Font = Enum.Font.SourceSansBold
-    Header.TextSize = 14
-    Header.TextXAlignment = Enum.TextXAlignment.Left
-    Header.TextTruncate = Enum.TextTruncate.AtEnd
-    Header.Parent = LogItem
+    for i, detail in ipairs(details) do
+        local label = self:CreateDetailLabel(detail[1], detail[2], yOffset)
+        label.Parent = self.DetailFrame
+        yOffset = yOffset + 25
+    end
     
     -- Arguments section
-    local ArgsText = "Arguments (" .. #logEntry.Arguments .. "):\n"
-    for i, arg in ipairs(logEntry.Arguments) do
-        ArgsText = ArgsText .. string.format("  [%d] %s: %s\n", i, arg.Type, arg.Value)
+    if data.Arguments and #data.Arguments > 0 then
+        yOffset = yOffset + 10
+        
+        local argTitle = self:CreateDetailTitle("📝 Arguments:", yOffset)
+        argTitle.Parent = self.DetailFrame
+        yOffset = yOffset + 25
+        
+        for i, arg in ipairs(data.Arguments) do
+            local argLabel = self:CreateDetailLabel("  Arg " .. i .. ":", tostring(arg), yOffset)
+            argLabel.Parent = self.DetailFrame
+            yOffset = yOffset + 20
+        end
     end
     
-    if logEntry.Result then
-        ArgsText = ArgsText .. "Result: " .. DeepSerialize(logEntry.Result) .. "\n"
+    -- Raw data section (if available)
+    if data.RawArgs then
+        yOffset = yOffset + 10
+        
+        local rawTitle = self:CreateDetailTitle("🔧 Raw Data:", yOffset)
+        rawTitle.Parent = self.DetailFrame
+        yOffset = yOffset + 25
+        
+        for i, arg in ipairs(data.RawArgs) do
+            local rawLabel = self:CreateDetailLabel("  Raw " .. i .. ":", 
+                "Type: " .. type(arg) .. " | Value: " .. tostring(arg), yOffset)
+            rawLabel.Parent = self.DetailFrame
+            yOffset = yOffset + 20
+        end
     end
-    
-    local ArgsLabel = Instance.new("TextLabel")
-    ArgsLabel.Size = UDim2.new(1, -10, 0, 0)
-    ArgsLabel.Position = UDim2.new(0, 5, 0, 27)
-    ArgsLabel.BackgroundTransparency = 1
-    ArgsLabel.Text = ArgsText
-    ArgsLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-    ArgsLabel.Font = Enum.Font.Code
-    ArgsLabel.TextSize = 12
-    ArgsLabel.TextXAlignment = Enum.TextXAlignment.Left
-    ArgsLabel.TextYAlignment = Enum.TextYAlignment.Top
-    ArgsLabel.TextWrapped = true
-    ArgsLabel.Parent = LogItem
-    
-    -- Calculate text height
-    local textHeight = ArgsLabel.TextBounds.Y
-    ArgsLabel.Size = UDim2.new(1, -10, 0, textHeight)
-    LogItem.Size = UDim2.new(1, -10, 0, textHeight + 35)
     
     -- Update canvas size
-    UI.LogsFrame.CanvasSize = UDim2.new(0, 0, 0, UI.LogsFrame.UIListLayout.AbsoluteContentSize.Y + 10)
-    UI.LogsFrame.CanvasPosition = Vector2.new(0, UI.LogsFrame.CanvasSize.Y.Offset)
+    self.DetailFrame.CanvasSize = UDim2.new(0, 0, 0, yOffset + 20)
 end
 
--- Hook RemoteEvent
-local function HookRemoteEvent(remote)
-    local remoteName = remote:GetFullName()
+-- Create detail label
+function NetworkSpy:CreateDetailLabel(title, value, yPos)
+    local container = Instance.new("Frame")
+    container.Size = UDim2.new(1, -20, 0, 20)
+    container.Position = UDim2.new(0, 10, 0, yPos)
+    container.BackgroundTransparency = 1
     
-    -- Hook incoming (OnClientEvent)
-    remote.OnClientEvent:Connect(function(...)
-        if not Config.LogEvents then return end
-        
-        local args = {...}
-        local logEntry = CreateLogEntry(remoteName, "RemoteEvent", "Incoming", args)
-        
-        table.insert(RemoteLogs.Events, logEntry)
-        AddLogToUI(logEntry)
-        
-        -- Keep only last MaxLogs entries
-        if #RemoteLogs.Events > Config.MaxLogs then
-            table.remove(RemoteLogs.Events, 1)
-        end
-    end)
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Size = UDim2.new(0, 100, 1, 0)
+    titleLabel.Position = UDim2.new(0, 0, 0, 0)
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.Text = title
+    titleLabel.TextColor3 = Theme.SubText
+    titleLabel.TextSize = 10
+    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    titleLabel.Font = Enum.Font.GothamBold
+    titleLabel.Parent = container
     
-    -- Hook outgoing (FireServer) using metatable
-    pcall(function()
-        local oldFireServer = remote.FireServer
-        remote.FireServer = function(self, ...)
-            if Config.LogEvents then
-                local args = {...}
-                local logEntry = CreateLogEntry(remoteName, "RemoteEvent", "Outgoing", args)
-                
-                table.insert(RemoteLogs.Events, logEntry)
-                AddLogToUI(logEntry)
-                
-                if #RemoteLogs.Events > Config.MaxLogs then
-                    table.remove(RemoteLogs.Events, 1)
-                end
-            end
-            
-            return oldFireServer(self, ...)
-        end
-    end)
+    local valueLabel = Instance.new("TextLabel")
+    valueLabel.Size = UDim2.new(1, -105, 1, 0)
+    valueLabel.Position = UDim2.new(0, 105, 0, 0)
+    valueLabel.BackgroundTransparency = 1
+    valueLabel.Text = tostring(value)
+    valueLabel.TextColor3 = Theme.Text
+    valueLabel.TextSize = 10
+    valueLabel.TextXAlignment = Enum.TextXAlignment.Left
+    valueLabel.TextWrapped = true
+    valueLabel.Font = Enum.Font.Gotham
+    valueLabel.Parent = container
+    
+    return container
 end
 
--- Hook RemoteFunction
-local function HookRemoteFunction(remote)
-    local remoteName = remote:GetFullName()
+-- Create detail title
+function NetworkSpy:CreateDetailTitle(title, yPos)
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Size = UDim2.new(1, -20, 0, 20)
+    titleLabel.Position = UDim2.new(0, 10, 0, yPos)
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.Text = title
+    titleLabel.TextColor3 = Theme.SubText
+    titleLabel.TextSize = 12
+    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    titleLabel.Font = Enum.Font.GothamBold
+    titleLabel.Parent = self.DetailFrame
     
-    -- Hook InvokeServer
-    pcall(function()
-        local oldInvokeServer = remote.InvokeServer
-        remote.InvokeServer = function(self, ...)
-            if Config.LogFunctions then
-                local args = {...}
-                local success, result = pcall(oldInvokeServer, self, ...)
-                
-                local logEntry = CreateLogEntry(remoteName, "RemoteFunction", "Invoke", args, result)
-                
-                table.insert(RemoteLogs.Functions, logEntry)
-                AddLogToUI(logEntry)
-                
-                if #RemoteLogs.Functions > Config.MaxLogs then
-                    table.remove(RemoteLogs.Functions, 1)
-                end
-                
-                if success then
-                    return result
-                else
-                    error(result)
-                end
-            else
-                return oldInvokeServer(self, ...)
-            end
-        end
-    end)
+    return titleLabel
 end
 
--- Scan and hook all remotes
-local function ScanAllRemotes()
-    local count = 0
+-- Update status label
+function NetworkSpy:UpdateStatus()
+    if not self.GUI then return end
     
-    local function scanContainer(container)
-        for _, obj in pairs(container:GetDescendants()) do
-            if obj:IsA("RemoteEvent") then
-                HookRemoteEvent(obj)
-                count = count + 1
-            elseif obj:IsA("RemoteFunction") then
-                HookRemoteFunction(obj)
-                count = count + 1
-            end
+    local statusLabel = self.GUI.MainFrame.ControlPanel.StatusLabel
+    local statusText = IsMonitoring and "Monitoring" or "Stopped"
+    local filteredCount = 0
+    
+    for _, data in ipairs(NetworkData) do
+        if MatchesFilter(data, SearchFilter, TypeFilter, DirectionFilter) then
+            filteredCount = filteredCount + 1
         end
     end
     
-    -- Scan ReplicatedStorage
-    scanContainer(ReplicatedStorage)
-    
-    -- Scan other services
-    for _, service in pairs(game:GetChildren()) do
-        if service ~= ReplicatedStorage then
-            pcall(function()
-                scanContainer(service)
-            end)
-        end
-    end
-    
-    print(string.format("[Remote Spy] Hooked %d remotes", count))
+    statusLabel.Text = string.format("Status: %s | Logs: %d/%d", statusText, filteredCount, #NetworkData)
 end
 
--- Hook new remotes automatically
-game.DescendantAdded:Connect(function(obj)
-    if obj:IsA("RemoteEvent") then
-        HookRemoteEvent(obj)
-    elseif obj:IsA("RemoteFunction") then
-        HookRemoteFunction(obj)
-    end
-end)
-
--- UI Event Handlers
-if UI then
-    UI.EventsBtn.MouseButton1Click:Connect(function()
-        Config.LogEvents = not Config.LogEvents
-        UI.EventsBtn.BackgroundColor3 = Config.LogEvents and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(100, 100, 100)
-    end)
+-- Clear logs
+function NetworkSpy:ClearLogs()
+    NetworkData = {}
+    SelectedLogIndex = 0
+    self:UpdateLogDisplay()
+    self:UpdateStatus()
     
-    UI.FunctionsBtn.MouseButton1Click:Connect(function()
-        Config.LogFunctions = not Config.LogFunctions
-        UI.FunctionsBtn.BackgroundColor3 = Config.LogFunctions and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(100, 100, 100)
-    end)
-    
-    UI.ClearBtn.MouseButton1Click:Connect(function()
-        RemoteLogs.Events = {}
-        RemoteLogs.Functions = {}
-        RemoteLogs.Count = 0
-        
-        for _, child in pairs(UI.LogsFrame:GetChildren()) do
-            if not child:IsA("UIListLayout") then
+    -- Clear details
+    if self.GUI and self.DetailFrame then
+        for _, child in ipairs(self.DetailFrame:GetChildren()) do
+            if child:IsA("TextLabel") and child.Name ~= "DetailTitle" then
+                child:Destroy()
+            elseif child:IsA("Frame") then
                 child:Destroy()
             end
         end
-        
-        UI.LogsFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
-    end)
+    end
+end
+
+-- Save logs to file
+function NetworkSpy:SaveLogs()
+    if #NetworkData == 0 then
+        self:ShowNotification("No logs to save")
+        return
+    end
     
-    UI.ExportBtn.MouseButton1Click:Connect(function()
-        local export = {
-            Timestamp = os.date("%Y-%m-%d %H:%M:%S"),
-            Events = RemoteLogs.Events,
-            Functions = RemoteLogs.Functions
-        }
-        
-        local json = HttpService:JSONEncode(export)
-        print("=== REMOTE SPY EXPORT ===")
-        print(json)
-        print("========================")
-        
-        _G.RemoteSpyData = export
-        print("Data saved to _G.RemoteSpyData")
-    end)
+    local logString = "Network Spy Remote Logs\n"
+    logString = logString .. "Generated: " .. GetFullTimeStamp() .. "\n"
+    logString = logString .. "Total Logs: " .. #NetworkData .. "\n\n"
     
-    UI.CloseBtn.MouseButton1Click:Connect(function()
-        UI.Main.Parent:Destroy()
-        Config.ShowUI = false
+    for i, data in ipairs(NetworkData) do
+        logString = logString .. string.format("[%s] %s - %s - %s\n", 
+            data.TimeStamp, data.Type, data.Name, data.Direction)
+        logString = logString .. "Full Path: " .. data.FullName .. "\n"
+        logString = logString .. "Arguments: " .. data.ArgumentCount .. "\n"
+        
+        for j, arg in ipairs(data.Arguments) do
+            logString = logString .. string.format("  Arg %d: %s\n", j, tostring(arg))
+        end
+        
+        if data.RawArgs then
+            logString = logString .. "Raw Values:\n"
+            for j, arg in ipairs(data.RawArgs) do
+                logString = logString .. string.format("  Raw %d: %s (%s)\n", j, tostring(arg), type(arg))
+            end
+        end
+        
+        logString = logString .. "\n"
+    end
+    
+    -- Write to file (in studio)
+    if RunService:IsStudio() then
+        local success, message = pcall(function()
+            local filename = "NetworkSpyLogs_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
+            writefile(filename, logString)
+            return filename
+        end)
+        
+        if success then
+            self:ShowNotification("Logs saved to: " .. message)
+        else
+            self:ShowNotification("Error saving logs: " .. message)
+        end
+    else
+        -- In game, just print to console
+        print("Network Spy Logs:\n" .. logString)
+        self:ShowNotification("Logs printed to console (F9)")
+    end
+end
+
+-- Copy details to clipboard
+function NetworkSpy:CopyDetails()
+    if SelectedLogIndex == 0 or not NetworkData[SelectedLogIndex] then
+        self:ShowNotification("No log selected to copy")
+        return
+    end
+    
+    local data = NetworkData[SelectedLogIndex]
+    local copyString = string.format("[%s] %s - %s - %s\n", 
+        data.TimeStamp, data.Type, data.Name, data.Direction)
+    copyString = copyString .. "Full Path: " .. data.FullName .. "\n"
+    copyString = copyString .. "Arguments: " .. data.ArgumentCount .. "\n"
+    
+    for i, arg in ipairs(data.Arguments) do
+        copyString = copyString .. string.format("Arg %d: %s\n", i, tostring(arg))
+    end
+    
+    if data.RawArgs then
+        copyString = copyString .. "Raw Values:\n"
+        for i, arg in ipairs(data.RawArgs) do
+            copyString = copyString .. string.format("Raw %d: %s (%s)\n", i, tostring(arg), type(arg))
+        end
+    end
+    
+    -- Set clipboard (in studio)
+    if RunService:IsStudio() and setclipboard then
+        setclipboard(copyString)
+        self:ShowNotification("Details copied to clipboard")
+    else
+        -- In game, just print to console
+        print("Network Spy Details:\n" .. copyString)
+        self:ShowNotification("Details printed to console (F9)")
+    end
+end
+
+-- Show notification
+function NetworkSpy:ShowNotification(message)
+    if not self.GUI then return end
+    
+    local notification = Instance.new("TextLabel")
+    notification.Size = UDim2.new(0, 300, 0, 40)
+    notification.Position = UDim2.new(0.5, -150, 0, -50)
+    notification.BackgroundColor3 = Theme.Secondary
+    notification.TextColor3 = Theme.Text
+    notification.Text = message
+    notification.TextSize = 14
+    notification.Font = Enum.Font.Gotham
+    notification.ZIndex = 20
+    notification.Parent = self.GUI.MainFrame
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 4)
+    corner.Parent = notification
+    
+    -- Animate in
+    local tweenIn = TweenService:Create(notification, TweenInfo.new(0.3), {
+        Position = UDim2.new(0.5, -150, 0, 10)
+    })
+    tweenIn:Play()
+    
+    -- Animate out after delay
+    delay(3, function()
+        if notification and notification.Parent then
+            local tweenOut = TweenService:Create(notification, TweenInfo.new(0.3), {
+                Position = UDim2.new(0.5, -150, 0, -50)
+            })
+            tweenOut:Play()
+            tweenOut.Completed:Connect(function()
+                notification:Destroy()
+            end)
+        end
     end)
 end
 
--- Global commands
-_G.RemoteSpy = {
-    Start = function()
-        ScanAllRemotes()
-        print("[Remote Spy] Started monitoring all remotes")
-    end,
-    
-    Stop = function()
-        Config.LogEvents = false
-        Config.LogFunctions = false
-        print("[Remote Spy] Stopped monitoring")
-    end,
-    
-    Clear = function()
-        RemoteLogs.Events = {}
-        RemoteLogs.Functions = {}
-        RemoteLogs.Count = 0
-        if UI then
-            for _, child in pairs(UI.LogsFrame:GetChildren()) do
-                if not child:IsA("UIListLayout") then
-                    child:Destroy()
-                end
-            end
-        end
-        print("[Remote Spy] Logs cleared")
-    end,
-    
-    Export = function()
-        local export = {
-            Events = RemoteLogs.Events,
-            Functions = RemoteLogs.Functions
-        }
-        _G.RemoteSpyData = export
-        print("[Remote Spy] Data exported to _G.RemoteSpyData")
-        return export
-    end,
-    
-    GetLogs = function()
-        return RemoteLogs
+-- Initialize Network Spy
+local networkSpy = NetworkSpy.new()
+
+-- Create toggle keybinding (F10)
+UserInputService.InputBegan:Connect(function(input, processed)
+    if not processed and input.KeyCode == Enum.KeyCode.F10 then
+        networkSpy:ToggleGUI()
     end
-}
+end)
 
--- Auto start
-_G.RemoteSpy.Start()
+-- Auto-start monitoring in studio
+if RunService:IsStudio() then
+    networkSpy:CreateGUI()
+    networkSpy:StartMonitoring()
+end
 
-print([[
-================================
-🔍 Simple Remote Spy Loaded!
-================================
-
-Features:
-✅ Events Remote monitoring
-✅ Function Remote monitoring  
-✅ Detailed parameter logging
-✅ Real-time UI display
-✅ Export functionality
-
-Commands:
-_G.RemoteSpy.Start()   - Start monitoring
-_G.RemoteSpy.Stop()    - Stop monitoring
-_G.RemoteSpy.Clear()   - Clear all logs
-_G.RemoteSpy.Export()  - Export data
-_G.RemoteSpy.ShowUI()  - Show/Recreate UI
-_G.RemoteSpy.HideUI()  - Hide UI
-_G.RemoteSpy.CheckUI() - Check UI status
-
-If UI not visible, try:
-_G.RemoteSpy.CheckUI()
-_G.RemoteSpy.ShowUI()
-
-UI Controls:
-- Events/Functions buttons: Toggle logging
-- Clear: Clear all displayed logs
-- Export: Export to console
-- Drag title to move window
-
-Ready to spy! 🕵️
-================================
-]])
+return networkSpy
