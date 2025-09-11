@@ -542,11 +542,17 @@ Features:
 ✅ Export functionality
 
 Commands:
-_G.RemoteSpy.Start()  - Start monitoring
-_G.RemoteSpy.Stop()   - Stop monitoring
-_G.RemoteSpy.Clear()  - Clear all logs
-_G.RemoteSpy.Export() - Export data
-_G.RemoteSpy.GetLogs() - Get raw logs
+_G.RemoteSpy.Start()   - Start monitoring
+_G.RemoteSpy.Stop()    - Stop monitoring
+_G.RemoteSpy.Clear()   - Clear all logs
+_G.RemoteSpy.Export()  - Export data
+_G.RemoteSpy.ShowUI()  - Show/Recreate UI
+_G.RemoteSpy.HideUI()  - Hide UI
+_G.RemoteSpy.CheckUI() - Check UI status
+
+If UI not visible, try:
+_G.RemoteSpy.CheckUI()
+_G.RemoteSpy.ShowUI()
 
 UI Controls:
 - Events/Functions buttons: Toggle logging
